@@ -57,10 +57,28 @@ jobs:
 
           # Start tunnel on RDP port 3389
           Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 5
+          
+          # Retry loop waiting for ngrok API to spin up
+          $attempts = 0
+          $maxAttempts = 10
+          $tunnel = $null
+          
+          while ($null -eq $tunnel -and $attempts -lt $maxAttempts) {
+              try {
+                  Start-Sleep -Seconds 3
+                  $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
+              } catch {
+                  $attempts++
+                  Write-Host "Waiting for ngrok API to respond... (Attempt $attempts / $maxAttempts)"
+              }
+          }
+
+          if ($null -eq $tunnel) {
+              Write-Error "Ngrok failed to initialize in time."
+              exit 1
+          }
 
           # Get your public RDP address
-          $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels
           $rdpAddress = $tunnel.tunnels[0].public_url -replace "tcp://", ""
 
           $host_part = $rdpAddress.Split(":")[0]
