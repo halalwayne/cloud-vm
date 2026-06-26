@@ -61,11 +61,9 @@ jobs:
           Write-Host "All apps and settings restored!"
           Write-Host "==============================="
 
-      # ── STEP 2: Performance + AnyDesk + RDP + Ngrok ────────────────────
+      # ── STEP 2: Performance + AnyDesk + RDP + Cloudflare ───────────────
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
           # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
@@ -90,39 +88,40 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled"
 
-          # ── Ngrok tunnel for RDP ──
-          curl.exe -L -o ngrok.zip `
-            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
-          Expand-Archive ./ngrok.zip -DestinationPath C:\ngrok -Force
-          C:\ngrok\ngrok.exe config add-authtoken $env:NGROK_TOKEN
-          Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
+          # ── Cloudflare Tunnel for RDP ──
+          curl.exe -L -o cloudflared.exe `
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
 
-          # ── Wait for ngrok to be ready ──
-          $tunnel = $null
+          Start-Process ./cloudflared.exe `
+            -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log" `
+            -WindowStyle Hidden
+
+          # ── Wait for tunnel URL ──
+          $rdpAddress = $null
           $tries = 0
-          while ($tries -lt 20) {
+          while ($tries -lt 30) {
             Start-Sleep -Seconds 3
-            try {
-              $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
-              if ($tunnel.tunnels.Count -gt 0) {
-                Write-Host "Ngrok is ready!"
+            if (Test-Path "C:\cf.log") {
+              $log = Get-Content "C:\cf.log" -Raw
+              if ($log -match "tcp://(.+\.trycloudflare\.com:\d+)") {
+                $rdpAddress = $matches[1]
+                Write-Host "Tunnel ready: $rdpAddress"
                 break
               }
-            } catch {
-              Write-Host "Waiting for ngrok... attempt $tries"
             }
+            Write-Host "Waiting for tunnel... attempt $tries"
             $tries++
           }
 
-          if (-not $tunnel -or $tunnel.tunnels.Count -eq 0) {
-            Write-Host "Ngrok failed to start after 60 seconds!"
+          if (-not $rdpAddress) {
+            Write-Host "=== CLOUDFLARE LOG ==="
+            Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
+            Write-Host "======================="
             exit 1
           }
 
-          # ── Get public RDP address ──
-          $rdpAddress = $tunnel.tunnels[0].public_url -replace "tcp://", ""
-          $rdpHost    = $rdpAddress.Split(":")[0]
-          $rdpPort    = $rdpAddress.Split(":")[1]
+          $rdpHost = $rdpAddress.Split(":")[0]
+          $rdpPort = $rdpAddress.Split(":")[1]
 
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
