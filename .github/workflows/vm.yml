@@ -9,19 +9,70 @@ jobs:
 
     steps:
 
-      - name: 0. Restore Persistent Files
+      # ── STEP 0: Restore C:\GamingVM (files + app backups) ──────────────
+      - name: 0. Restore Everything
         uses: actions/cache/restore@v4
         with:
           path: C:\GamingVM
           key: gaming-vm-files
           restore-keys: gaming-vm-files
 
-      - name: 1. Unlock Maximum Performance
+      # ── STEP 1: Reinstall Apps From Backup ─────────────────────────────
+      - name: 1. Reinstall Apps From Backup
         shell: pwsh
         run: |
-          New-Item -Path "C:\GamingVM\Backup"  -ItemType Directory -Force
-          New-Item -Path "C:\GamingVM\Startup" -ItemType Directory -Force
+          # Install 7-Zip first (needed to extract backups)
+          curl.exe -L -o 7zip.exe https://www.7-zip.org/a/7z2301-x64.exe
+          Start-Process ./7zip.exe -ArgumentList "/S" -Wait
+          $7z = "C:\Program Files\7-Zip\7z.exe"
 
+          # Create folders
+          New-Item -Path "C:\GamingVM\Backups"  -ItemType Directory -Force
+          New-Item -Path "C:\GamingVM\Files"    -ItemType Directory -Force
+          New-Item -Path "C:\GamingVM\MyApps"   -ItemType Directory -Force
+
+          # ── Restore Program Files (your installed apps) ──
+          if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
+            Write-Host "Restoring installed apps..."
+            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" -o"C:\Program Files\" -y
+          }
+
+          # ── Restore 32-bit apps ──
+          if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
+            Write-Host "Restoring 32-bit apps..."
+            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" -o"C:\Program Files (x86)\" -y
+          }
+
+          # ── Restore App Settings & Profiles ──
+          if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
+            Write-Host "Restoring app settings..."
+            & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
+          }
+
+          # ── Restore ProgramData ──
+          if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
+            Write-Host "Restoring ProgramData..."
+            & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y
+          }
+
+          # ── Restore Registry (app settings, file associations) ──
+          if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
+            Write-Host "Restoring system registry..."
+            reg import "C:\GamingVM\Backups\Registry_HKLM.reg" 2>&1 | Out-Null
+          }
+          if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
+            Write-Host "Restoring user registry..."
+            reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
+          }
+
+          Write-Host "==============================="
+          Write-Host "All apps and settings restored!"
+          Write-Host "==============================="
+
+      # ── STEP 2: System Performance ──────────────────────────────────────
+      - name: 2. Unlock Maximum Performance
+        shell: pwsh
+        run: |
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 
           reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
@@ -31,17 +82,15 @@ jobs:
           Start-Process ./vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
 
           curl.exe -L -o anydesk.exe https://download.anydesk.com/AnyDesk.exe
-          Start-Process ./anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
+          Start-Process ./anydesk.exe `
+            -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
-      - name: 2. Restore & Boost System
-        shell: pwsh
-        run: |
-          if (Test-Path "C:\GamingVM\Backup\System.reg") {
-            reg import "C:\GamingVM\Backup\System.reg"
-          }
-
+      # ── STEP 3: Session ──────────────────────────────────────────────────
       - name: 3. Session Info & Keep Alive
         shell: pwsh
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           echo "GitHub@2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
 
@@ -58,22 +107,97 @@ jobs:
           Write-Host "=========================================="
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
+          Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "=========================================="
 
+          # Send Discord notification if webhook is set
+          if ($env:DISCORD_WEBHOOK) {
+            $message = @{
+              embeds = @(@{
+                title  = "VM LIVE - Run #$env:RUN_NUMBER"
+                color  = 3066993
+                fields = @(
+                  @{ name = "AnyDesk ID"; value = "$ID";          inline = $true }
+                  @{ name = "Password";   value = "GitHub@2026";  inline = $true }
+                )
+              })
+            } | ConvertTo-Json -Depth 10
+            Invoke-RestMethod -Uri $env:DISCORD_WEBHOOK `
+              -Method POST -ContentType "application/json" -Body $message
+          }
+
+          # Keep alive loop with 10min warning
           $cutoff = [DateTime]::Now.AddHours(5).AddMinutes(30)
+          $warned  = $false
+
           while ([DateTime]::Now -lt $cutoff) {
+            if (!$warned -and ([DateTime]::Now -gt $cutoff.AddMinutes(-10))) {
+              Write-Host "WARNING: 10 minutes until restart!"
+              if ($env:DISCORD_WEBHOOK) {
+                $warn = @{
+                  embeds = @(@{
+                    title = "VM Restarting in 10 Minutes - Save Your Work!"
+                    color = 16776960
+                  })
+                } | ConvertTo-Json -Depth 10
+                Invoke-RestMethod -Uri $env:DISCORD_WEBHOOK `
+                  -Method POST -ContentType "application/json" -Body $warn
+              }
+              $warned = $true
+            }
             Start-Sleep -Seconds 60
           }
-          Write-Host "5.5 hrs reached — saving and restarting..."
 
-      - name: 4. Save Persistent Files
+      # ── STEP 4: Save EVERYTHING Before Restart ──────────────────────────
+      - name: 4. Save Everything
         if: always()
         shell: pwsh
         run: |
-          New-Item -Path "C:\GamingVM\Backup" -ItemType Directory -Force
-          reg export "HKCU\Software" "C:\GamingVM\Backup\System.reg" /y 2>&1 | Out-Null
-          Write-Host "Backup complete."
+          $7z = "C:\Program Files\7-Zip\7z.exe"
+          New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
+          # These folders are excluded — Windows default bloat, saves space
+          $excludeList = @(
+            "WindowsApps", "Windows NT", "Internet Explorer",
+            "Common Files\microsoft shared", "ModifiableWindowsApps"
+          )
+          $excludeArgs = $excludeList | ForEach-Object { "-xr!`"$_`"" }
+
+          Write-Host "Saving installed apps (Program Files)..."
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" `
+            "C:\Program Files\*" -mx=3 -mmt=on -y @excludeArgs
+
+          Write-Host "Saving 32-bit apps..."
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" `
+            "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeArgs
+
+          Write-Host "Saving app settings and profiles..."
+          & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
+            "C:\Users\runneradmin\AppData\*" `
+            -mx=3 -mmt=on -y `
+            -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache"
+
+          Write-Host "Saving ProgramData..."
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" `
+            "C:\ProgramData\*" `
+            -mx=3 -mmt=on -y `
+            -xr!"Microsoft" -xr!"Windows" -xr!"USOPrivate"
+
+          Write-Host "Saving registry..."
+          reg export "HKLM\SOFTWARE" `
+            "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
+          reg export "HKCU" `
+            "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+
+          # Show backup sizes
+          Write-Host "======= Backup Sizes ======="
+          Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
+            $size = [math]::Round($_.Length / 1MB, 2)
+            Write-Host "$($_.Name) = $size MB"
+          }
+          Write-Host "============================"
+
+      # ── STEP 5: Upload Cache ─────────────────────────────────────────────
       - name: 5. Upload Cache for Next Run
         if: always()
         uses: actions/cache/save@v4
@@ -81,6 +205,7 @@ jobs:
           path: C:\GamingVM
           key: gaming-vm-files-${{ github.run_number }}
 
+      # ── STEP 6: Auto Restart ─────────────────────────────────────────────
       - name: 6. Auto-Restart Workflow
         if: always()
         shell: pwsh
@@ -102,5 +227,5 @@ jobs:
               -Body $body -ContentType "application/json"
             Write-Host "New run triggered successfully"
           } catch {
-            Write-Host "Failed to trigger restart: $_"
+            Write-Host "Failed to trigger: $_"
           }
