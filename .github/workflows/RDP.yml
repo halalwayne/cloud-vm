@@ -52,15 +52,12 @@ jobs:
             https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
           Expand-Archive ./ngrok.zip -DestinationPath C:\ngrok -Force
 
-          # Add your ngrok token
-          C:\ngrok\ngrok.exe config add-authtoken $env:NGROK_TOKEN
-
-          # Start tunnel on RDP port 3389
-          Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
+          # Start tunnel by passing the authtoken directly as an argument to bypass config path issues
+          Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389 --authtoken $env:NGROK_TOKEN" -WindowStyle Hidden
           
           # Retry loop waiting for ngrok API to spin up
           $attempts = 0
-          $maxAttempts = 10
+          $maxAttempts = 12
           $tunnel = $null
           
           while ($null -eq $tunnel -and $attempts -lt $maxAttempts) {
@@ -74,7 +71,7 @@ jobs:
           }
 
           if ($null -eq $tunnel) {
-              Write-Error "Ngrok failed to initialize in time."
+              Write-Error "Ngrok failed to initialize. Double check that your NGROK_TOKEN secret is valid, has not expired, and isn't hitting active session limits."
               exit 1
           }
 
