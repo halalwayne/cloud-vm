@@ -21,7 +21,6 @@ jobs:
       - name: 1. Reinstall Apps From Backup
         shell: pwsh
         run: |
-          # 7-Zip is already installed on GitHub runners — no download needed
           $7z = "C:\Program Files\7-Zip\7z.exe"
           if (-not (Test-Path $7z)) {
             Write-Host "7-Zip not found, installing via chocolatey..."
@@ -97,10 +96,30 @@ jobs:
           Expand-Archive ./ngrok.zip -DestinationPath C:\ngrok -Force
           C:\ngrok\ngrok.exe config add-authtoken $env:NGROK_TOKEN
           Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 8
+
+          # ── Wait for ngrok to be ready ──
+          $tunnel = $null
+          $tries = 0
+          while ($tries -lt 20) {
+            Start-Sleep -Seconds 3
+            try {
+              $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
+              if ($tunnel.tunnels.Count -gt 0) {
+                Write-Host "Ngrok is ready!"
+                break
+              }
+            } catch {
+              Write-Host "Waiting for ngrok... attempt $tries"
+            }
+            $tries++
+          }
+
+          if (-not $tunnel -or $tunnel.tunnels.Count -eq 0) {
+            Write-Host "Ngrok failed to start after 60 seconds!"
+            exit 1
+          }
 
           # ── Get public RDP address ──
-          $tunnel     = Invoke-RestMethod http://localhost:4040/api/tunnels
           $rdpAddress = $tunnel.tunnels[0].public_url -replace "tcp://", ""
           $rdpHost    = $rdpAddress.Split(":")[0]
           $rdpPort    = $rdpAddress.Split(":")[1]
@@ -163,7 +182,6 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          # 7-Zip already installed — use it directly
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
