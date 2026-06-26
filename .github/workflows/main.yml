@@ -85,7 +85,6 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           net user runneradmin "GitHub@2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
-          Write-Host "RDP Enabled — Username: runneradmin | Password: GitHub@2026"
 
           # ── Ngrok tunnel for RDP ──
           curl.exe -L -o ngrok.zip `
@@ -96,14 +95,13 @@ jobs:
           Start-Sleep -Seconds 8
 
           # ── Get public RDP address ──
-          $tunnel      = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $rdpAddress  = $tunnel.tunnels[0].public_url -replace "tcp://", ""
-          $rdpHost     = $rdpAddress.Split(":")[0]
-          $rdpPort     = $rdpAddress.Split(":")[1]
+          $tunnel     = Invoke-RestMethod http://localhost:4040/api/tunnels
+          $rdpAddress = $tunnel.tunnels[0].public_url -replace "tcp://", ""
+          $rdpHost    = $rdpAddress.Split(":")[0]
+          $rdpPort    = $rdpAddress.Split(":")[1]
 
-          # ── Save for Step 3 to read ──
-          "$rdpHost"  | Set-Content "C:\GamingVM\rdp_host.txt"
-          "$rdpPort"  | Set-Content "C:\GamingVM\rdp_port.txt"
+          "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
+          "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
 
           Write-Host "=========================================="
           Write-Host "  RDP HOST : $rdpHost"
@@ -112,14 +110,12 @@ jobs:
           Write-Host "  PASSWORD : GitHub@2026"
           Write-Host "=========================================="
 
-      # ── STEP 3: Session Info + Discord + Keep Alive ─────────────────────
+      # ── STEP 3: Session Info + Keep Alive ───────────────────────────────
       - name: 3. Session Info & Keep Alive
         shell: pwsh
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          RUN_NUMBER:      ${{ github.run_number }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          # ── AnyDesk password + ID ──
           echo "GitHub@2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
 
           $idFile = "C:\ProgramData\AnyDesk\system.conf"
@@ -132,68 +128,32 @@ jobs:
             Start-Sleep -Seconds 5
           }
 
-          # ── Read RDP address saved from Step 2 ──
           $rdpHost = Get-Content "C:\GamingVM\rdp_host.txt" -ErrorAction SilentlyContinue
           $rdpPort = Get-Content "C:\GamingVM\rdp_port.txt" -ErrorAction SilentlyContinue
 
           Write-Host "=========================================="
+          Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
           Write-Host "  RDP HOST   : $rdpHost"
           Write-Host "  RDP PORT   : $rdpPort"
           Write-Host "  USERNAME   : runneradmin"
-          Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "=========================================="
 
-          # ── Discord — VM Live notification ──
-          if ($env:DISCORD_WEBHOOK) {
-            $message = @{
-              embeds = @(@{
-                title  = "✅ VM LIVE — Run #$env:RUN_NUMBER"
-                color  = 3066993
-                fields = @(
-                  @{ name = "🖥️ AnyDesk ID"; value = "$ID";            inline = $true }
-                  @{ name = "🔑 Password";    value = "GitHub@2026";    inline = $true }
-                  @{ name = "📺 RDP Host";    value = "$rdpHost";       inline = $true }
-                  @{ name = "🔌 RDP Port";    value = "$rdpPort";       inline = $true }
-                  @{ name = "👤 Username";    value = "runneradmin";    inline = $true }
-                  @{ name = "🔑 RDP Pass";    value = "GitHub@2026";    inline = $true }
-                  @{ name = "📺 LG TV Steps"; value = "Home → Home Office → Connect Remote PC → enter Host + Port + Username + Password"; inline = $false }
-                )
-                footer = @{ text = "Auto-restarts every 5.5 hours — new message will be sent" }
-              })
-            } | ConvertTo-Json -Depth 10
-
-            Invoke-RestMethod -Uri $env:DISCORD_WEBHOOK `
-              -Method POST -ContentType "application/json" -Body $message
-          }
-
-          # ── Keep alive — warn 10 mins before restart ──
+          # ── Keep alive loop with 10 min warning ──
           $cutoff = [DateTime]::Now.AddHours(5).AddMinutes(30)
           $warned = $false
 
           while ([DateTime]::Now -lt $cutoff) {
             if (!$warned -and ([DateTime]::Now -gt $cutoff.AddMinutes(-10))) {
               Write-Host "WARNING: 10 minutes until restart — save your work!"
-
-              if ($env:DISCORD_WEBHOOK) {
-                $warn = @{
-                  embeds = @(@{
-                    title       = "⚠️ VM Restarting in 10 Minutes!"
-                    description = "Save your work now. Files in C:\GamingVM\ are safe. New connection details will be sent after restart."
-                    color       = 16776960
-                  })
-                } | ConvertTo-Json -Depth 10
-                Invoke-RestMethod -Uri $env:DISCORD_WEBHOOK `
-                  -Method POST -ContentType "application/json" -Body $warn
-              }
               $warned = $true
             }
             Start-Sleep -Seconds 60
           }
           Write-Host "5.5 hrs reached — saving and restarting..."
 
-      # ── STEP 4: Save EVERYTHING ─────────────────────────────────────────
+      # ── STEP 4: Save Everything ──────────────────────────────────────────
       - name: 4. Save Everything
         if: always()
         shell: pwsh
