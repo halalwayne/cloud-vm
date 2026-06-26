@@ -92,31 +92,45 @@ jobs:
           curl.exe -L -o cloudflared.exe `
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
 
+          # Start with JSON log
           Start-Process ./cloudflared.exe `
-            -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log" `
+            -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
             -WindowStyle Hidden
 
-          # ── Wait for tunnel URL ──
+          # ── Wait and parse JSON log for tunnel URL ──
           $rdpAddress = $null
           $tries = 0
-          while ($tries -lt 30) {
+          while ($tries -lt 40) {
             Start-Sleep -Seconds 3
             if (Test-Path "C:\cf.log") {
-              $log = Get-Content "C:\cf.log" -Raw
-              if ($log -match "tcp://(.+\.trycloudflare\.com:\d+)") {
-                $rdpAddress = $matches[1]
-                Write-Host "Tunnel ready: $rdpAddress"
-                break
+              $lines = Get-Content "C:\cf.log"
+              foreach ($line in $lines) {
+                try {
+                  $json = $line | ConvertFrom-Json
+                  # Look for the hostname in any field
+                  $fields = $json.PSObject.Properties.Value | Where-Object { $_ -match "trycloudflare\.com" }
+                  if ($fields) {
+                    foreach ($f in $fields) {
+                      if ($f -match "([\w\-]+\.trycloudflare\.com)") {
+                        $rdpAddress = "$($matches[1]):3389"
+                        Write-Host "Tunnel URL found: $rdpAddress"
+                        break
+                      }
+                    }
+                  }
+                } catch {}
+                if ($rdpAddress) { break }
               }
             }
+            if ($rdpAddress) { break }
             Write-Host "Waiting for tunnel... attempt $tries"
             $tries++
           }
 
           if (-not $rdpAddress) {
-            Write-Host "=== CLOUDFLARE LOG ==="
+            Write-Host "=== FULL CLOUDFLARE LOG ==="
             Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
-            Write-Host "======================="
+            Write-Host "==========================="
             exit 1
           }
 
