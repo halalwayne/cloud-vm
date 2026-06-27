@@ -32,21 +32,37 @@ jobs:
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
-            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" -o"C:\Program Files\" -y
+            Write-Host "Restoring installed apps..."
+            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" `
+              -o"C:\Program Files\" -y `
+              -xr!"Windows Defender" `
+              -xr!"Windows Defender Advanced Threat Protection" `
+              -xr!"WindowsApps" `
+              -xr!"Windows NT" `
+              -xr!"Internet Explorer" `
+              -xr!"ModifiableWindowsApps"
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
-            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" -o"C:\Program Files (x86)\" -y
+            Write-Host "Restoring 32-bit apps..."
+            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" `
+              -o"C:\Program Files (x86)\" -y `
+              -xr!"Windows Defender" `
+              -xr!"Internet Explorer"
           }
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
+            Write-Host "Restoring app settings..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
+            Write-Host "Restoring ProgramData..."
             & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
+            Write-Host "Restoring system registry..."
             reg import "C:\GamingVM\Backups\Registry_HKLM.reg" 2>&1 | Out-Null
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
+            Write-Host "Restoring user registry..."
             reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
           }
           Write-Host "All apps and settings restored!"
@@ -194,6 +210,8 @@ jobs:
           $excludeArgs = @(
             "-xr!WindowsApps",
             "-xr!Windows NT",
+            "-xr!Windows Defender",
+            "-xr!Windows Defender Advanced Threat Protection",
             "-xr!Internet Explorer",
             "-xr!Common Files\microsoft shared",
             "-xr!ModifiableWindowsApps"
