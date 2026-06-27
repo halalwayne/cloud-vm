@@ -75,33 +75,46 @@ jobs:
           Start-Process ./anydesk.exe `
             -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
+          # ════════════════════════════════════════════════════
+          # SPOOF WINDOWS SERVER AS WINDOWS 10 PRO
+          # LG TV rejects Windows Server — this tricks it
+          # ════════════════════════════════════════════════════
+          $cv = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+          Set-ItemProperty -Path $cv -Name "ProductName"              -Value "Windows 10 Pro"
+          Set-ItemProperty -Path $cv -Name "EditionID"                -Value "Professional"
+          Set-ItemProperty -Path $cv -Name "CompositionEditionID"     -Value "Professional"
+          Set-ItemProperty -Path $cv -Name "CurrentBuildNumber"       -Value "19045"
+          Set-ItemProperty -Path $cv -Name "CurrentMajorVersionNumber" -Value 10  -Type DWord
+          Set-ItemProperty -Path $cv -Name "CurrentMinorVersionNumber" -Value 0   -Type DWord
+          Set-ItemProperty -Path $cv -Name "CurrentVersion"           -Value "10.0"
+          Write-Host "Windows spoofed as Windows 10 Pro for LG TV"
+
           # ── Enable RDP ──
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" -Value 0
 
-          # ── Disable NLA completely so LG TV can connect ──
+          # ── Disable NLA completely ──
           $rdpTcp = "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication"  -Value 0
-          Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"       -Value 0
-          Set-ItemProperty -Path $rdpTcp -Name "MinEncryptionLevel"  -Value 1
+          Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication" -Value 0
+          Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"      -Value 0
+          Set-ItemProperty -Path $rdpTcp -Name "MinEncryptionLevel" -Value 1
 
-          # ── IMPORTANT: Restart RDP service to apply NLA changes ──
-          Stop-Service  -Name "TermService" -Force  -ErrorAction SilentlyContinue
-          Start-Sleep   -Seconds 2
+          # ── Restart RDP service to apply all changes ──
+          Stop-Service  -Name "TermService" -Force -ErrorAction SilentlyContinue
+          Start-Sleep   -Seconds 3
           Start-Service -Name "TermService"
           Start-Sleep   -Seconds 3
-          Write-Host "RDP service restarted — NLA fully disabled"
+          Write-Host "RDP service restarted — NLA disabled — Win10 Pro spoofed"
 
           # ── Firewall ──
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule `
-            name="RDP-Custom" protocol=TCP dir=in localport=3389 action=allow
+            name="RDP-3389" protocol=TCP dir=in localport=3389 action=allow
 
-          # ── Set user password ──
+          # ── Set password ──
           net user runneradmin "GitHub@2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
-          Write-Host "RDP ready — Username: runneradmin | Password: GitHub@2026"
 
           # ── Download bore ──
           Write-Host "Downloading bore..."
@@ -122,7 +135,7 @@ jobs:
                      Select-Object -First 1 -ExpandProperty FullName
           Copy-Item $boreExe "C:\bore.exe" -Force
 
-          # ── Start bore as persistent detached process ──
+          # ── Start bore ──
           $outFile = "C:\GamingVM\bore_out.txt"
           $errFile = "C:\GamingVM\bore_err.txt"
           "" | Set-Content $outFile
@@ -142,15 +155,9 @@ jobs:
             $err  = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
             $text = "$out`n$err"
             $match = [regex]::Match($text, "bore\.pub:(\d+)")
-            if ($match.Success) {
-              $rdpPort = $match.Groups[1].Value
-              break
-            }
+            if ($match.Success) { $rdpPort = $match.Groups[1].Value; break }
             $match2 = [regex]::Match($text, "remote_port=(\d+)")
-            if ($match2.Success) {
-              $rdpPort = $match2.Groups[1].Value
-              break
-            }
+            if ($match2.Success) { $rdpPort = $match2.Groups[1].Value; break }
           }
 
           # ── Resolve bore.pub to real IP ──
@@ -159,9 +166,7 @@ jobs:
             $rdpIP = [System.Net.Dns]::GetHostAddresses("bore.pub") |
                      Where-Object { $_.AddressFamily -eq "InterNetwork" } |
                      Select-Object -First 1 -ExpandProperty IPAddressToString
-          } catch {
-            $rdpIP = "bore.pub"
-          }
+          } catch { $rdpIP = "bore.pub" }
 
           "$rdpIP"   | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
@@ -171,7 +176,7 @@ jobs:
           Write-Host "  RDP PORT : $rdpPort"
           Write-Host "  USERNAME : runneradmin"
           Write-Host "  PASSWORD : GitHub@2026"
-          Write-Host "  NLA      : DISABLED (LG TV compatible)"
+          Write-Host "  OS SPOOF : Windows 10 Pro"
           Write-Host "=========================================="
 
       # ── STEP 3: Session Info + Keep Alive ───────────────────────────────
@@ -199,10 +204,8 @@ jobs:
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  ── LG TV RDP ──────────────────────"
-          Write-Host "  IP ADDRESS : $rdpHost"
-          Write-Host "  PORT       : $rdpPort"
-          Write-Host "  TYPE IN TV : $rdpHost`:$rdpPort"
+          Write-Host "  ── LG TV RDP ──"
+          Write-Host "  TYPE THIS  : $rdpHost`:$rdpPort"
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
           Write-Host "=========================================="
