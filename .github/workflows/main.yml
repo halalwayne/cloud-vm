@@ -26,26 +26,32 @@ jobs:
           New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
-          # Only restore YOUR apps folder, not all of Program Files
           if (Test-Path "C:\GamingVM\Backups\MyApps.7z") {
             Write-Host "Restoring your apps..."
             & $7z x "C:\GamingVM\Backups\MyApps.7z" -o"C:\" -y
           } else {
-            Write-Host "No app backup found — fresh start"
+            Write-Host "No app backup — fresh start"
           }
 
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
             Write-Host "Restoring app settings..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
           }
-          if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
-            Write-Host "Restoring user registry..."
-            reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
+
+          if (Test-Path "C:\GamingVM\Backups\Desktop.7z") {
+            Write-Host "Restoring Desktop..."
+            & $7z x "C:\GamingVM\Backups\Desktop.7z" -o"C:\Users\runneradmin\Desktop\" -y
           }
+
+          if (Test-Path "C:\GamingVM\Backups\Documents.7z") {
+            Write-Host "Restoring Documents..."
+            & $7z x "C:\GamingVM\Backups\Documents.7z" -o"C:\Users\runneradmin\Documents\" -y
+          }
+
           Write-Host "Done restoring!"
 
-      # ── STEP 2: Performance + RDP + AnyDesk + Cloudflare ───────────────
-      - name: 2. Unlock Performance + Enable RDP + AnyDesk
+      # ── STEP 2: Setup RDP + AnyDesk + Cloudflare ───────────────────────
+      - name: 2. Setup RDP + AnyDesk + Tunnel
         shell: pwsh
         run: |
           # ── Performance ──
@@ -53,39 +59,42 @@ jobs:
           reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
             /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
 
-          # ── Download everything in parallel ──
-          $jobs = @(
-            Start-Job { curl.exe -L -s -o C:\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe },
-            Start-Job { curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe },
-            Start-Job { curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe }
-          )
-          Write-Host "Downloading all tools in parallel..."
-          $jobs | Wait-Job | Out-Null
-          $jobs | Remove-Job
-          Write-Host "All downloads done!"
-
-          # ── Install VC++ ──
-          Start-Process C:\vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
-
-          # ── Install AnyDesk ──
-          Start-Process C:\anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
-
-          # ── Enable RDP ──
+          # ── Enable RDP FIRST (most important for LG TV) ──
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          net user runneradmin "GitHub@2026"
+          net user runneradmin "Github2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
-          Write-Host "RDP Enabled"
+          Write-Host "RDP Enabled!"
 
-          # ── Start Cloudflare Tunnel ──
+          # ── Download AnyDesk + Cloudflare in parallel ──
+          $jobs = @(
+            Start-Job { curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe },
+            Start-Job { curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe }
+          )
+          Write-Host "Downloading tools..."
+          $jobs | Wait-Job | Out-Null
+          $jobs | Remove-Job
+          Write-Host "Downloads done!"
+
+          # ── Install AnyDesk ──
+          Start-Process C:\anydesk.exe `
+            -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
+          Start-Sleep -Seconds 5
+          echo "Github2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
+          Write-Host "AnyDesk ready!"
+
+          # ── Start Cloudflare Tunnel for RDP ──
           Start-Process C:\cloudflared.exe `
             -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
             -WindowStyle Hidden
 
-          # ── Parse tunnel URL from JSON log ──
-          $rdpAddress = $null
+          # ── Wait for tunnel URL ──
+          $rdpHost = $null
           $tries = 0
           while ($tries -lt 40) {
             Start-Sleep -Seconds 3
@@ -94,87 +103,91 @@ jobs:
               foreach ($line in $lines) {
                 try {
                   $json = $line | ConvertFrom-Json
-                  $fields = $json.PSObject.Properties.Value | Where-Object { $_ -match "trycloudflare\.com" }
+                  $fields = $json.PSObject.Properties.Value | `
+                    Where-Object { $_ -match "trycloudflare\.com" }
                   if ($fields) {
                     foreach ($f in $fields) {
                       if ($f -match "([\w\-]+\.trycloudflare\.com)") {
-                        $rdpAddress = "$($matches[1]):3389"
-                        Write-Host "Tunnel ready: $rdpAddress"
+                        $rdpHost = $matches[1]
                         break
                       }
                     }
                   }
                 } catch {}
-                if ($rdpAddress) { break }
+                if ($rdpHost) { break }
               }
             }
-            if ($rdpAddress) { break }
+            if ($rdpHost) { break }
             Write-Host "Waiting for tunnel... attempt $tries"
             $tries++
           }
 
-          if (-not $rdpAddress) {
+          if (-not $rdpHost) {
             Write-Host "=== CLOUDFLARE LOG ==="
             Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
-            Write-Host "======================"
-            exit 1
+            Write-Host "Tunnel failed but continuing — use AnyDesk!"
           }
 
-          $rdpHost = $rdpAddress.Split(":")[0]
-          $rdpPort = "3389"
-
-          "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
-          "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
-
-          Write-Host "=========================================="
-          Write-Host "  RDP HOST : $rdpHost"
-          Write-Host "  RDP PORT : $rdpPort"
-          Write-Host "  USERNAME : runneradmin"
-          Write-Host "  PASSWORD : GitHub@2026"
-          Write-Host "=========================================="
-
-      # ── STEP 3: Session Info + Keep Alive ───────────────────────────────
-      - name: 3. Session Info & Keep Alive
-        shell: pwsh
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          echo "GitHub@2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
-
+          # ── Get AnyDesk ID ──
           $idFile = "C:\ProgramData\AnyDesk\system.conf"
           $ID = ""
-          while (!$ID) {
+          $idTries = 0
+          while (!$ID -and $idTries -lt 20) {
             if (Test-Path $idFile) {
               $ID = Select-String -Path $idFile -Pattern "ad.anynet.id=(.*)" |
                     ForEach-Object { $_.Matches.Groups[1].Value }
             }
-            Start-Sleep -Seconds 5
+            if (!$ID) { Start-Sleep -Seconds 3 }
+            $idTries++
           }
 
-          $rdpHost = Get-Content "C:\GamingVM\rdp_host.txt" -ErrorAction SilentlyContinue
-          $rdpPort = Get-Content "C:\GamingVM\rdp_port.txt" -ErrorAction SilentlyContinue
+          # ── Save info ──
+          "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
+          "3389"     | Set-Content "C:\GamingVM\rdp_port.txt"
+          "$ID"      | Set-Content "C:\GamingVM\anydesk_id.txt"
 
           Write-Host "=========================================="
-          Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
-          Write-Host "  ANYDESK ID : $ID"
-          Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  RDP HOST   : $rdpHost"
-          Write-Host "  RDP PORT   : $rdpPort"
+          Write-Host " >> LG TV Remote PC Settings <<"
+          Write-Host "  PC ADDRESS : $rdpHost"
+          Write-Host "  PORT       : 3389"
           Write-Host "  USERNAME   : runneradmin"
+          Write-Host "  PASSWORD   : Github2026"
+          Write-Host " >> AnyDesk <<"
+          Write-Host "  ANYDESK ID : $ID"
+          Write-Host "  PASSWORD   : Github2026"
           Write-Host "=========================================="
 
-          # ── Keep alive with 10 min warning ──
+      # ── STEP 3: Keep Alive ───────────────────────────────────────────────
+      - name: 3. Keep Alive
+        shell: pwsh
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          $rdpHost = Get-Content "C:\GamingVM\rdp_host.txt" -ErrorAction SilentlyContinue
+          $ID      = Get-Content "C:\GamingVM\anydesk_id.txt" -ErrorAction SilentlyContinue
+
+          Write-Host "=========================================="
+          Write-Host " RUN NUMBER : $env:RUN_NUMBER"
+          Write-Host " >> LG TV Remote PC <<"
+          Write-Host "  PC ADDRESS : $rdpHost"
+          Write-Host "  PORT       : 3389"
+          Write-Host "  USERNAME   : runneradmin"
+          Write-Host "  PASSWORD   : Github2026"
+          Write-Host " >> AnyDesk <<"
+          Write-Host "  ANYDESK ID : $ID"
+          Write-Host "  PASSWORD   : Github2026"
+          Write-Host "=========================================="
+
           $cutoff = [DateTime]::Now.AddHours(5).AddMinutes(30)
           $warned = $false
-
           while ([DateTime]::Now -lt $cutoff) {
             if (!$warned -and ([DateTime]::Now -gt $cutoff.AddMinutes(-10))) {
-              Write-Host "WARNING: 10 minutes until restart — save your work!"
+              Write-Host "WARNING: 10 minutes left — save your work!"
               $warned = $true
             }
             Start-Sleep -Seconds 60
           }
-          Write-Host "5.5 hrs reached — saving and restarting..."
+          Write-Host "Time up — saving and restarting..."
 
       # ── STEP 4: Save Everything ──────────────────────────────────────────
       - name: 4. Save Everything
@@ -184,24 +197,19 @@ jobs:
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
-          # Only save YOUR apps installed in C:\MyApps — not all Program Files
           if (Test-Path "C:\MyApps") {
             Write-Host "Saving your apps..."
             & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" `
               "C:\MyApps\*" -mx=3 -mmt=on -y
           }
 
-          Write-Host "Saving app settings..."
+          Write-Host "Saving AppData..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
             "C:\Users\runneradmin\AppData\*" `
             -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache"
 
-          Write-Host "Saving user registry..."
-          reg export "HKCU" `
-            "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
-
-          Write-Host "Saving desktop files..."
+          Write-Host "Saving Desktop..."
           & $7z a -t7z "C:\GamingVM\Backups\Desktop.7z" `
             "C:\Users\runneradmin\Desktop\*" -mx=3 -mmt=on -y
 
@@ -240,11 +248,10 @@ jobs:
             "Accept"        = "application/vnd.github.v3+json"
           }
           $body = @{ ref = $env:BRANCH } | ConvertTo-Json
-
           try {
             Invoke-RestMethod -Uri $uri -Method POST -Headers $headers `
               -Body $body -ContentType "application/json"
-            Write-Host "New run triggered successfully"
+            Write-Host "New run triggered!"
           } catch {
             Write-Host "Failed to trigger: $_"
           }
