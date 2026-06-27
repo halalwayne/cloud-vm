@@ -40,8 +40,6 @@ jobs:
 
       - name: 2. Setup RDP + AnyDesk + Tunnel
         shell: pwsh
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
           # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
@@ -58,17 +56,15 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled!"
 
-          # ── Download AnyDesk ──
+          # ── Download and install AnyDesk ──
           Write-Host "Downloading AnyDesk..."
           curl.exe -L -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe
-
-          # ── Install AnyDesk ──
           Start-Process C:\anydesk.exe `
             -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
           Start-Sleep -Seconds 5
           echo "Github2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
 
-          # ── Get AnyDesk ID immediately ──
+          # ── Get AnyDesk ID ──
           $idFile = "C:\ProgramData\AnyDesk\system.conf"
           $ID = ""
           for ($i = 0; $i -lt 20; $i++) {
@@ -79,59 +75,96 @@ jobs:
             if ($ID) { break }
             Start-Sleep -Seconds 3
           }
+          "$ID" | Set-Content "C:\GamingVM\anydesk_id.txt"
 
           Write-Host "=========================================="
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : Github2026"
           Write-Host "=========================================="
-          "$ID" | Set-Content "C:\GamingVM\anydesk_id.txt"
 
-          # ── Setup Tunnel via localhost.run (no token needed) ──
-          Write-Host "Setting up SSH tunnel..."
+          # ── Try Playit.gg tunnel (uses UDP/TCP on port 443 - not blocked) ──
+          Write-Host "Trying Playit.gg tunnel..."
+          curl.exe -L -o C:\playit.exe https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-x86_64-signed.exe
           
-          # Install OpenSSH client if needed
-          Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 2>$null
+          $playitSize = (Get-Item "C:\playit.exe" -ErrorAction SilentlyContinue).Length
+          Write-Host "Playit downloaded: $playitSize bytes"
 
-          # Start SSH tunnel in background - localhost.run is free, no signup
-          $sshJob = Start-Job {
-            ssh -o StrictHostKeyChecking=no `
-                -o ServerAliveInterval=60 `
-                -R 3389:localhost:3389 `
-                nokey@localhost.run 2>&1
-          }
-
-          Start-Sleep -Seconds 15
-          $sshOut = Receive-Job $sshJob
-          Write-Host "SSH Output: $sshOut"
-
-          # Extract tunnel URL
-          $rdpHost = $null
-          if ($sshOut -match "([\w\-]+\.lhr\.life)") {
-            $rdpHost = $matches[1]
-          }
-
-          if (-not $rdpHost) {
-            Write-Host "localhost.run failed, trying serveo.net..."
-            $sshJob2 = Start-Job {
-              ssh -o StrictHostKeyChecking=no `
-                  -o ServerAliveInterval=60 `
-                  -R 3389:localhost:3389 `
-                  serveo.net 2>&1
-            }
-            Start-Sleep -Seconds 15
-            $sshOut2 = Receive-Job $sshJob2
-            Write-Host "Serveo Output: $sshOut2"
-            if ($sshOut2 -match "Forwarding TCP.*?(\d+\.\d+\.\d+\.\d+):(\d+)") {
-              $rdpHost = $matches[1]
+          if ($playitSize -gt 100000) {
+            # Run playit and capture output to get tunnel URL
+            Start-Process C:\playit.exe -ArgumentList "--secret_path C:\playit_secret.txt" -WindowStyle Hidden
+            Start-Sleep -Seconds 20
+            
+            # Check for claim URL in playit output
+            $playitLog = "C:\playit_log.txt"
+            Start-Process C:\playit.exe `
+              -ArgumentList "account guest" `
+              -RedirectStandardOutput $playitLog -Wait
+            
+            if (Test-Path $playitLog) {
+              $logContent = Get-Content $playitLog -Raw
+              Write-Host "Playit log: $logContent"
             }
           }
 
-          if (-not $rdpHost) {
-            Write-Host "All tunnels failed — use AnyDesk!"
-            $rdpHost = "USE_ANYDESK"
+          # ── Try Zrok (free, no account needed) ──
+          Write-Host "Trying Zrok tunnel..."
+          curl.exe -L -o C:\zrok.zip https://github.com/openziti/zrok/releases/download/v0.4.44/zrok_0.4.44_windows_amd64.zip
+          $zrokSize = (Get-Item "C:\zrok.zip" -ErrorAction SilentlyContinue).Length
+          Write-Host "Zrok downloaded: $zrokSize bytes"
+
+          if ($zrokSize -gt 100000) {
+            Expand-Archive C:\zrok.zip -DestinationPath C:\zrok -Force
+            Write-Host "Zrok extracted!"
+            # Zrok needs account so skip tunnel
+
           }
 
-          "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
+          # ── Final fallback: Try Cloudflare with specific version ──
+          Write-Host "Trying Cloudflare tunnel..."
+          curl.exe -L -o C:\cloudflared.exe `
+            "https://github.com/cloudflare/cloudflared/releases/download/2024.12.2/cloudflared-windows-amd64.exe"
+          
+          $cfSize = (Get-Item "C:\cloudflared.exe" -ErrorAction SilentlyContinue).Length
+          Write-Host "Cloudflare downloaded: $cfSize bytes"
+
+          if ($cfSize -gt 100000) {
+            Start-Process C:\cloudflared.exe `
+              -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
+              -WindowStyle Hidden
+
+            $rdpHost = $null
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 3
+              if (Test-Path "C:\cf.log") {
+                Get-Content "C:\cf.log" | ForEach-Object {
+                  try {
+                    $j = $_ | ConvertFrom-Json
+                    $j.PSObject.Properties.Value | ForEach-Object {
+                      if ($_ -match "([\w\-]+\.trycloudflare\.com)") {
+                        $rdpHost = $matches[1]
+                      }
+                    }
+                  } catch {}
+                }
+              }
+              if ($rdpHost) { break }
+              Write-Host "CF attempt $i..."
+            }
+
+            if ($rdpHost) {
+              Write-Host "CLOUDFLARE TUNNEL SUCCESS: $rdpHost"
+              "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
+            } else {
+              Write-Host "=== CF LOG ==="
+              Get-Content "C:\cf.log" -ErrorAction SilentlyContinue | Select-Object -Last 10
+              "USE_ANYDESK" | Set-Content "C:\GamingVM\rdp_host.txt"
+            }
+          } else {
+            Write-Host "Cloudflare download failed!"
+            "USE_ANYDESK" | Set-Content "C:\GamingVM\rdp_host.txt"
+          }
+
+          $rdpHost = Get-Content "C:\GamingVM\rdp_host.txt"
 
           Write-Host "=========================================="
           Write-Host " >> LG TV - Add Remote PC <<"
@@ -185,10 +218,8 @@ jobs:
           if (Test-Path "C:\MyApps") {
             & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" "C:\MyApps\*" -mx=3 -mmt=on -y
           }
-
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
-            "C:\Users\runneradmin\AppData\*" `
-            -mx=3 -mmt=on -y `
+            "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" `
             -xr!"Application Data" -xr!"History" -xr!"INetCache"
 
