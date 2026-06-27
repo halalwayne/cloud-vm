@@ -58,7 +58,7 @@ jobs:
           Write-Host "All apps and settings restored!"
           Write-Host "==============================="
 
-      # ── STEP 2: Performance + AnyDesk + RDP + Bore Tunnel ──────────────
+      # ── STEP 2: Performance + AnyDesk + RDP + Tunnel ───────────────────
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
         run: |
@@ -85,46 +85,85 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled"
 
-          # ── Download bore (free TCP tunnel — no account, no card needed) ──
+          # ── Download bore ──
           Write-Host "Downloading bore tunnel..."
           $release = Invoke-RestMethod `
             "https://api.github.com/repos/ekzhang/bore/releases/latest"
           $asset = $release.assets | Where-Object {
-            $_.name -like "*x86_64*windows*.zip"
+            $_.name -like "*x86_64*windows*"
+          } | Select-Object -First 1
+
+          if (-not $asset) {
+            # Fallback direct download
+            curl.exe -L -o "C:\bore.zip" `
+              "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
+          } else {
+            curl.exe -L -o "C:\bore.zip" $asset.browser_download_url
           }
-          curl.exe -L -o "C:\bore.zip" $asset.browser_download_url
           Expand-Archive "C:\bore.zip" -DestinationPath "C:\bore" -Force
 
-          # ── Start bore tunnel on RDP port 3389 ──
-          $boreLog = "C:\GamingVM\bore_log.txt"
-          "" | Set-Content $boreLog
-          Start-Process -FilePath "C:\bore\bore.exe" `
-            -ArgumentList "local 3389 --to bore.pub" `
-            -RedirectStandardError $boreLog `
-            -WindowStyle Hidden
+          # Find bore.exe wherever it extracted
+          $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" |
+                     Select-Object -First 1 -ExpandProperty FullName
+          Write-Host "bore.exe found at: $boreExe"
 
-          # ── Wait and read the assigned port ──
+          # ── Start bore as background job to capture output ──
+          Write-Host "Starting bore tunnel..."
+          $boreJob = Start-Job -ScriptBlock {
+            param($exe)
+            & $exe local 3389 --to bore.pub 2>&1
+          } -ArgumentList $boreExe
+
+          # ── Wait up to 60 seconds for port ──
           $rdpHost = "bore.pub"
           $rdpPort = ""
-          Write-Host "Waiting for bore tunnel..."
-          for ($i = 0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 2
-            $content = Get-Content $boreLog -Raw -ErrorAction SilentlyContinue
-            if ($content) {
-              $match = [regex]::Match($content, "listening at bore\.pub:(\d+)")
+
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 3
+            $out = Receive-Job $boreJob -Keep
+            $text = $out -join "`n"
+            Write-Host "Bore output: $text"
+
+            $match = [regex]::Match($text, "bore\.pub:(\d+)")
+            if ($match.Success) {
+              $rdpPort = $match.Groups[1].Value
+              Write-Host "Got port: $rdpPort"
+              break
+            }
+            # Also try plain number pattern after bore.pub
+            $match2 = [regex]::Match($text, ":(\d{4,5})")
+            if ($match2.Success) {
+              $rdpPort = $match2.Groups[1].Value
+              Write-Host "Got port (fallback): $rdpPort"
+              break
+            }
+          }
+
+          if (-not $rdpPort) {
+            Write-Host "Bore failed — trying SSH tunnel via serveo.net..."
+            # Serveo fallback via built-in Windows SSH
+            $rdpHost = "serveo.net"
+            $sshOut  = "C:\GamingVM\ssh_out.txt"
+            Start-Process -FilePath "ssh" `
+              -ArgumentList "-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 0:localhost:3389 serveo.net" `
+              -RedirectStandardOutput $sshOut `
+              -RedirectStandardError  $sshOut `
+              -WindowStyle Hidden
+
+            for ($i = 0; $i -lt 15; $i++) {
+              Start-Sleep -Seconds 3
+              $content = Get-Content $sshOut -Raw -ErrorAction SilentlyContinue
+              Write-Host "SSH output: $content"
+              $match = [regex]::Match($content, "Allocated port (\d+)")
               if ($match.Success) {
                 $rdpPort = $match.Groups[1].Value
+                Write-Host "Got serveo port: $rdpPort"
                 break
               }
             }
           }
 
-          if (!$rdpPort) {
-            Write-Host "WARNING: Could not get bore port — check bore_log.txt"
-            Get-Content $boreLog
-          }
-
-          # ── Save for Step 3 ──
+          # ── Save connection details ──
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
 
@@ -163,9 +202,11 @@ jobs:
           Write-Host "  RDP HOST   : $rdpHost"
           Write-Host "  RDP PORT   : $rdpPort"
           Write-Host "  USERNAME   : runneradmin"
+          Write-Host "  RDP PASS   : GitHub@2026"
           Write-Host "=========================================="
+          Write-Host "LG TV: Home > Home Office > Connect Remote PC"
+          Write-Host "Enter Host: $rdpHost  Port: $rdpPort"
 
-          # ── Keep alive with 10 min warning ──
           $cutoff = [DateTime]::Now.AddHours(5).AddMinutes(30)
           $warned = $false
           while ([DateTime]::Now -lt $cutoff) {
@@ -193,18 +234,15 @@ jobs:
             "-xr!ModifiableWindowsApps"
           )
 
-          # NOTE: 7-Zip exit code 1 = warnings only (locked files) — this is fine
-          # Only exit code 2+ means real failure
-
           Write-Host "Saving installed apps..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" `
             "C:\Program Files\*" -mx=3 -mmt=on -y @excludeArgs
-          if ($LASTEXITCODE -gt 1) { Write-Host "Warning: some files skipped" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
 
           Write-Host "Saving 32-bit apps..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" `
             "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeArgs
-          if ($LASTEXITCODE -gt 1) { Write-Host "Warning: some files skipped" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
 
           Write-Host "Saving app settings..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
@@ -212,14 +250,14 @@ jobs:
             -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" `
             -xr!"Local\Packages" -xr!"Local\Microsoft\Windows"
-          if ($LASTEXITCODE -gt 1) { Write-Host "Warning: some files skipped" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
 
           Write-Host "Saving ProgramData..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" `
             "C:\ProgramData\*" `
             -mx=3 -mmt=on -y `
             -xr!"Microsoft" -xr!"Windows" -xr!"USOPrivate" -xr!"USOShared"
-          if ($LASTEXITCODE -gt 1) { Write-Host "Warning: some files skipped" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
 
           Write-Host "Saving registry..."
           reg export "HKLM\SOFTWARE" `
@@ -258,7 +296,6 @@ jobs:
             "Accept"        = "application/vnd.github.v3+json"
           }
           $body = @{ ref = $env:BRANCH } | ConvertTo-Json
-
           try {
             Invoke-RestMethod -Uri $uri -Method POST -Headers $headers `
               -Body $body -ContentType "application/json"
