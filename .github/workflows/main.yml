@@ -53,12 +53,11 @@ jobs:
           if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
             reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
           }
-
           Write-Host "==============================="
           Write-Host "All apps and settings restored!"
           Write-Host "==============================="
 
-      # ── STEP 2: Performance + AnyDesk + RDP + Tunnel ───────────────────
+      # ── STEP 2: Performance + AnyDesk + RDP + Bore ─────────────────────
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
         run: |
@@ -76,17 +75,36 @@ jobs:
           Start-Process ./anydesk.exe `
             -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
-          # ── Enable Windows RDP ──
+          # ── Enable RDP ──
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" -Value 0
+
+          # ── Disable NLA completely so LG TV can connect ──
+          $rdpTcp = "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+          Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication"  -Value 0
+          Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"       -Value 0
+          Set-ItemProperty -Path $rdpTcp -Name "MinEncryptionLevel"  -Value 1
+
+          # ── IMPORTANT: Restart RDP service to apply NLA changes ──
+          Stop-Service  -Name "TermService" -Force  -ErrorAction SilentlyContinue
+          Start-Sleep   -Seconds 2
+          Start-Service -Name "TermService"
+          Start-Sleep   -Seconds 3
+          Write-Host "RDP service restarted — NLA fully disabled"
+
+          # ── Firewall ──
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall firewall add rule `
+            name="RDP-Custom" protocol=TCP dir=in localport=3389 action=allow
+
+          # ── Set user password ──
           net user runneradmin "GitHub@2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
-          Write-Host "RDP Enabled"
+          Write-Host "RDP ready — Username: runneradmin | Password: GitHub@2026"
 
           # ── Download bore ──
-          Write-Host "Downloading bore tunnel..."
+          Write-Host "Downloading bore..."
           $release = Invoke-RestMethod `
             "https://api.github.com/repos/ekzhang/bore/releases/latest"
           $asset = $release.assets | Where-Object {
@@ -100,58 +118,60 @@ jobs:
             curl.exe -L -o "C:\bore.zip" $asset.browser_download_url
           }
           Expand-Archive "C:\bore.zip" -DestinationPath "C:\bore" -Force
-
           $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" |
                      Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "bore.exe at: $boreExe"
+          Copy-Item $boreExe "C:\bore.exe" -Force
 
-          # ── Start bore tunnel ──
-          Write-Host "Starting bore tunnel..."
-          $boreJob = Start-Job -ScriptBlock {
-            param($exe)
-            & $exe local 3389 --to bore.pub 2>&1
-          } -ArgumentList $boreExe
+          # ── Start bore as persistent detached process ──
+          $outFile = "C:\GamingVM\bore_out.txt"
+          $errFile = "C:\GamingVM\bore_err.txt"
+          "" | Set-Content $outFile
+          "" | Set-Content $errFile
 
-          # ── Wait for port ──
+          Start-Process -FilePath "C:\bore.exe" `
+            -ArgumentList "local 3389 --to bore.pub" `
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError  $errFile `
+            -WindowStyle Hidden
+
+          Write-Host "Bore started — waiting for port..."
           $rdpPort = ""
           for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 3
-            $out  = Receive-Job $boreJob -Keep
-            $text = $out -join "`n"
+            $out  = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+            $err  = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+            $text = "$out`n$err"
             $match = [regex]::Match($text, "bore\.pub:(\d+)")
             if ($match.Success) {
               $rdpPort = $match.Groups[1].Value
               break
             }
-            $match2 = [regex]::Match($text, ":(\d{4,5})")
+            $match2 = [regex]::Match($text, "remote_port=(\d+)")
             if ($match2.Success) {
               $rdpPort = $match2.Groups[1].Value
               break
             }
           }
 
-          # ── Resolve bore.pub to real IP for LG TV ──
-          # LG TV rejects hostnames — needs real IP address
+          # ── Resolve bore.pub to real IP ──
           $rdpIP = ""
           try {
             $rdpIP = [System.Net.Dns]::GetHostAddresses("bore.pub") |
                      Where-Object { $_.AddressFamily -eq "InterNetwork" } |
                      Select-Object -First 1 -ExpandProperty IPAddressToString
-            Write-Host "bore.pub resolved to IP: $rdpIP"
           } catch {
-            Write-Host "DNS resolve failed: $_"
             $rdpIP = "bore.pub"
           }
 
-          # ── Save both hostname and IP ──
           "$rdpIP"   | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
 
           Write-Host "=========================================="
-          Write-Host "  RDP IP   : $rdpIP   ← USE THIS ON TV"
+          Write-Host "  RDP IP   : $rdpIP"
           Write-Host "  RDP PORT : $rdpPort"
           Write-Host "  USERNAME : runneradmin"
           Write-Host "  PASSWORD : GitHub@2026"
+          Write-Host "  NLA      : DISABLED (LG TV compatible)"
           Write-Host "=========================================="
 
       # ── STEP 3: Session Info + Keep Alive ───────────────────────────────
@@ -179,9 +199,10 @@ jobs:
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  ── LG TV RDP ──"
-          Write-Host "  IP ADDRESS : $rdpHost  ← TYPE THIS"
-          Write-Host "  PORT       : $rdpPort  ← TICK Include Port"
+          Write-Host "  ── LG TV RDP ──────────────────────"
+          Write-Host "  IP ADDRESS : $rdpHost"
+          Write-Host "  PORT       : $rdpPort"
+          Write-Host "  TYPE IN TV : $rdpHost`:$rdpPort"
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
           Write-Host "=========================================="
@@ -206,8 +227,7 @@ jobs:
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
           $excludeArgs = @(
-            "-xr!WindowsApps",
-            "-xr!Windows NT",
+            "-xr!WindowsApps", "-xr!Windows NT",
             "-xr!Internet Explorer",
             "-xr!Common Files\microsoft shared",
             "-xr!ModifiableWindowsApps"
@@ -269,15 +289,15 @@ jobs:
           WORKFLOW_FILE: vm.yml
           BRANCH:        main
         run: |
-          $uri     = "https://api.github.com/repos/$env:REPO/actions/workflows/$env:WORKFLOW_FILE/dispatches"
+          $uri = "https://api.github.com/repos/$env:REPO/actions/workflows/$env:WORKFLOW_FILE/dispatches"
           $headers = @{
             "Authorization" = "token $env:GH_TOKEN"
             "Accept"        = "application/vnd.github.v3+json"
           }
           $body = @{ ref = $env:BRANCH } | ConvertTo-Json
           try {
-            Invoke-RestMethod -Uri $uri -Method POST -Headers $headers `
-              -Body $body -ContentType "application/json"
+            Invoke-RestMethod -Uri $uri -Method POST `
+              -Headers $headers -Body $body -ContentType "application/json"
             Write-Host "New run triggered successfully"
           } catch {
             Write-Host "Failed to trigger: $_"
