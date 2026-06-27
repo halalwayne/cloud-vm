@@ -21,10 +21,8 @@ jobs:
       - name: 1. Reinstall Apps From Backup
         shell: pwsh
         run: |
-          # 7-Zip is already installed on GitHub runners — no download needed
           $7z = "C:\Program Files\7-Zip\7z.exe"
           if (-not (Test-Path $7z)) {
-            Write-Host "7-Zip not found, installing via chocolatey..."
             choco install 7zip -y --no-progress
           }
           Write-Host "7-Zip ready at $7z"
@@ -34,55 +32,52 @@ jobs:
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
-            Write-Host "Restoring installed apps..."
             & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" -o"C:\Program Files\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
-            Write-Host "Restoring 32-bit apps..."
             & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" -o"C:\Program Files (x86)\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
-            Write-Host "Restoring app settings..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
-            Write-Host "Restoring ProgramData..."
             & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
-            Write-Host "Restoring system registry..."
             reg import "C:\GamingVM\Backups\Registry_HKLM.reg" 2>&1 | Out-Null
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
-            Write-Host "Restoring user registry..."
             reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
           }
-
-          Write-Host "==============================="
           Write-Host "All apps and settings restored!"
-          Write-Host "==============================="
 
-      # ── STEP 2: Performance + AnyDesk + RDP + Ngrok ────────────────────
+      # ── STEP 2: Performance + RDP + AnyDesk + Cloudflare ───────────────
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
           # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
           reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
             /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
 
-          # ── Visual C++ ──
-          curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
-          Start-Process ./vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
+          # ── Download everything in parallel ──
+          $jobs = @(
+            Start-Job { curl.exe -L -s -o C:\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe },
+            Start-Job { curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe },
+            Start-Job { curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe }
+          )
+          Write-Host "Downloading all tools in parallel..."
+          $jobs | Wait-Job | Out-Null
+          $jobs | Remove-Job
+          Write-Host "All downloads done!"
 
-          # ── AnyDesk ──
-          curl.exe -L -o anydesk.exe https://download.anydesk.com/AnyDesk.exe
-          Start-Process ./anydesk.exe `
-            -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
+          # ── Install VC++ ──
+          Start-Process C:\vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
 
-          # ── Enable Windows RDP ──
+          # ── Install AnyDesk ──
+          Start-Process C:\anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
+
+          # ── Enable RDP ──
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" -Value 0
@@ -91,19 +86,49 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled"
 
-          # ── Ngrok tunnel for RDP ──
-          curl.exe -L -o ngrok.zip `
-            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
-          Expand-Archive ./ngrok.zip -DestinationPath C:\ngrok -Force
-          C:\ngrok\ngrok.exe config add-authtoken $env:NGROK_TOKEN
-          Start-Process C:\ngrok\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 8
+          # ── Start Cloudflare Tunnel ──
+          Start-Process C:\cloudflared.exe `
+            -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
+            -WindowStyle Hidden
 
-          # ── Get public RDP address ──
-          $tunnel     = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $rdpAddress = $tunnel.tunnels[0].public_url -replace "tcp://", ""
-          $rdpHost    = $rdpAddress.Split(":")[0]
-          $rdpPort    = $rdpAddress.Split(":")[1]
+          # ── Parse tunnel URL from JSON log ──
+          $rdpAddress = $null
+          $tries = 0
+          while ($tries -lt 40) {
+            Start-Sleep -Seconds 3
+            if (Test-Path "C:\cf.log") {
+              $lines = Get-Content "C:\cf.log"
+              foreach ($line in $lines) {
+                try {
+                  $json = $line | ConvertFrom-Json
+                  $fields = $json.PSObject.Properties.Value | Where-Object { $_ -match "trycloudflare\.com" }
+                  if ($fields) {
+                    foreach ($f in $fields) {
+                      if ($f -match "([\w\-]+\.trycloudflare\.com)") {
+                        $rdpAddress = "$($matches[1]):3389"
+                        Write-Host "Tunnel ready: $rdpAddress"
+                        break
+                      }
+                    }
+                  }
+                } catch {}
+                if ($rdpAddress) { break }
+              }
+            }
+            if ($rdpAddress) { break }
+            Write-Host "Waiting for tunnel... attempt $tries"
+            $tries++
+          }
+
+          if (-not $rdpAddress) {
+            Write-Host "=== CLOUDFLARE LOG ==="
+            Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
+            Write-Host "======================"
+            exit 1
+          }
+
+          $rdpHost = $rdpAddress.Split(":")[0]
+          $rdpPort = "3389"
 
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
@@ -163,7 +188,6 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          # 7-Zip already installed — use it directly
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
