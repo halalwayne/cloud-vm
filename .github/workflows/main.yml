@@ -22,50 +22,27 @@ jobs:
         shell: pwsh
         run: |
           $7z = "C:\Program Files\7-Zip\7z.exe"
-          if (-not (Test-Path $7z)) {
-            choco install 7zip -y --no-progress
-          }
-          Write-Host "7-Zip ready at $7z"
-
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
-          if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
-            Write-Host "Restoring installed apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" `
-              -o"C:\Program Files\" -y `
-              -xr!"Windows Defender" `
-              -xr!"Windows Defender Advanced Threat Protection" `
-              -xr!"WindowsApps" `
-              -xr!"Windows NT" `
-              -xr!"Internet Explorer" `
-              -xr!"ModifiableWindowsApps"
+          # Only restore YOUR apps folder, not all of Program Files
+          if (Test-Path "C:\GamingVM\Backups\MyApps.7z") {
+            Write-Host "Restoring your apps..."
+            & $7z x "C:\GamingVM\Backups\MyApps.7z" -o"C:\" -y
+          } else {
+            Write-Host "No app backup found — fresh start"
           }
-          if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
-            Write-Host "Restoring 32-bit apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" `
-              -o"C:\Program Files (x86)\" -y `
-              -xr!"Windows Defender" `
-              -xr!"Internet Explorer"
-          }
+
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
             Write-Host "Restoring app settings..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
-          }
-          if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
-            Write-Host "Restoring ProgramData..."
-            & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y
-          }
-          if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
-            Write-Host "Restoring system registry..."
-            reg import "C:\GamingVM\Backups\Registry_HKLM.reg" 2>&1 | Out-Null
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKCU.reg") {
             Write-Host "Restoring user registry..."
             reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
           }
-          Write-Host "All apps and settings restored!"
+          Write-Host "Done restoring!"
 
       # ── STEP 2: Performance + RDP + AnyDesk + Cloudflare ───────────────
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
@@ -207,23 +184,12 @@ jobs:
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
-          $excludeArgs = @(
-            "-xr!WindowsApps",
-            "-xr!Windows NT",
-            "-xr!Windows Defender",
-            "-xr!Windows Defender Advanced Threat Protection",
-            "-xr!Internet Explorer",
-            "-xr!Common Files\microsoft shared",
-            "-xr!ModifiableWindowsApps"
-          )
-
-          Write-Host "Saving installed apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" `
-            "C:\Program Files\*" -mx=3 -mmt=on -y @excludeArgs
-
-          Write-Host "Saving 32-bit apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" `
-            "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeArgs
+          # Only save YOUR apps installed in C:\MyApps — not all Program Files
+          if (Test-Path "C:\MyApps") {
+            Write-Host "Saving your apps..."
+            & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" `
+              "C:\MyApps\*" -mx=3 -mmt=on -y
+          }
 
           Write-Host "Saving app settings..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
@@ -231,17 +197,17 @@ jobs:
             -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache"
 
-          Write-Host "Saving ProgramData..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" `
-            "C:\ProgramData\*" `
-            -mx=3 -mmt=on -y `
-            -xr!"Microsoft" -xr!"Windows" -xr!"USOPrivate"
-
-          Write-Host "Saving registry..."
-          reg export "HKLM\SOFTWARE" `
-            "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
+          Write-Host "Saving user registry..."
           reg export "HKCU" `
             "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+
+          Write-Host "Saving desktop files..."
+          & $7z a -t7z "C:\GamingVM\Backups\Desktop.7z" `
+            "C:\Users\runneradmin\Desktop\*" -mx=3 -mmt=on -y
+
+          Write-Host "Saving Documents..."
+          & $7z a -t7z "C:\GamingVM\Backups\Documents.7z" `
+            "C:\Users\runneradmin\Documents\*" -mx=3 -mmt=on -y
 
           Write-Host "======= Backup Sizes ======="
           Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
