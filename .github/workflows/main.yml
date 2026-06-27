@@ -9,7 +9,6 @@ jobs:
 
     steps:
 
-      # ── STEP 0: Restore Everything ──────────────────────────────────────
       - name: 0. Restore Everything
         uses: actions/cache/restore@v4
         with:
@@ -17,7 +16,6 @@ jobs:
           key: gaming-vm-files
           restore-keys: gaming-vm-files
 
-      # ── STEP 1: Reinstall Apps From Backup ─────────────────────────────
       - name: 1. Reinstall Apps From Backup
         shell: pwsh
         run: |
@@ -27,35 +25,26 @@ jobs:
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
           if (Test-Path "C:\GamingVM\Backups\MyApps.7z") {
-            Write-Host "Restoring your apps..."
             & $7z x "C:\GamingVM\Backups\MyApps.7z" -o"C:\" -y
-          } else {
-            Write-Host "No app backup — fresh start"
           }
-
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
-            Write-Host "Restoring app settings..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y
           }
-
           if (Test-Path "C:\GamingVM\Backups\Desktop.7z") {
             & $7z x "C:\GamingVM\Backups\Desktop.7z" -o"C:\Users\runneradmin\Desktop\" -y
           }
-
           if (Test-Path "C:\GamingVM\Backups\Documents.7z") {
             & $7z x "C:\GamingVM\Backups\Documents.7z" -o"C:\Users\runneradmin\Documents\" -y
           }
-
           Write-Host "Done restoring!"
 
-      # ── STEP 2: Setup RDP + AnyDesk + Cloudflare ───────────────────────
       - name: 2. Setup RDP + AnyDesk + Tunnel
         shell: pwsh
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
           # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-          reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
-            /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
 
           # ── Enable RDP ──
           Set-ItemProperty `
@@ -72,82 +61,77 @@ jobs:
           # ── Download AnyDesk ──
           Write-Host "Downloading AnyDesk..."
           curl.exe -L -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe
-          Write-Host "AnyDesk downloaded!"
-
-          # ── Download Cloudflare (fixed URL) ──
-          Write-Host "Downloading Cloudflare..."
-          $cfUrl = "https://github.com/cloudflare/cloudflared/releases/download/2025.1.1/cloudflared-windows-amd64.exe"
-          curl.exe -L -o C:\cloudflared.exe $cfUrl
-          Write-Host "Cloudflare downloaded! Size: $((Get-Item C:\cloudflared.exe).Length) bytes"
 
           # ── Install AnyDesk ──
           Start-Process C:\anydesk.exe `
             -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
           Start-Sleep -Seconds 5
           echo "Github2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
-          Write-Host "AnyDesk ready!"
 
-          # ── Get AnyDesk ID early so it shows even if tunnel fails ──
+          # ── Get AnyDesk ID immediately ──
           $idFile = "C:\ProgramData\AnyDesk\system.conf"
           $ID = ""
-          $idTries = 0
-          while (!$ID -and $idTries -lt 20) {
+          for ($i = 0; $i -lt 20; $i++) {
             if (Test-Path $idFile) {
               $ID = Select-String -Path $idFile -Pattern "ad.anynet.id=(.*)" |
                     ForEach-Object { $_.Matches.Groups[1].Value }
             }
-            if (!$ID) { Start-Sleep -Seconds 3 }
-            $idTries++
+            if ($ID) { break }
+            Start-Sleep -Seconds 3
           }
 
           Write-Host "=========================================="
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : Github2026"
           Write-Host "=========================================="
+          "$ID" | Set-Content "C:\GamingVM\anydesk_id.txt"
 
-          # ── Start Cloudflare Tunnel ──
-          Start-Process C:\cloudflared.exe `
-            -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
-            -WindowStyle Hidden
+          # ── Setup Tunnel via localhost.run (no token needed) ──
+          Write-Host "Setting up SSH tunnel..."
+          
+          # Install OpenSSH client if needed
+          Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 2>$null
 
-          # ── Wait for tunnel URL ──
+          # Start SSH tunnel in background - localhost.run is free, no signup
+          $sshJob = Start-Job {
+            ssh -o StrictHostKeyChecking=no `
+                -o ServerAliveInterval=60 `
+                -R 3389:localhost:3389 `
+                nokey@localhost.run 2>&1
+          }
+
+          Start-Sleep -Seconds 15
+          $sshOut = Receive-Job $sshJob
+          Write-Host "SSH Output: $sshOut"
+
+          # Extract tunnel URL
           $rdpHost = $null
-          $tries = 0
-          while ($tries -lt 30) {
-            Start-Sleep -Seconds 3
-            if (Test-Path "C:\cf.log") {
-              $lines = Get-Content "C:\cf.log"
-              foreach ($line in $lines) {
-                try {
-                  $json = $line | ConvertFrom-Json
-                  $fields = $json.PSObject.Properties.Value | `
-                    Where-Object { $_ -match "trycloudflare\.com" }
-                  if ($fields) {
-                    foreach ($f in $fields) {
-                      if ($f -match "([\w\-]+\.trycloudflare\.com)") {
-                        $rdpHost = $matches[1]
-                        break
-                      }
-                    }
-                  }
-                } catch {}
-                if ($rdpHost) { break }
-              }
-            }
-            if ($rdpHost) { break }
-            Write-Host "Waiting for tunnel... attempt $tries"
-            $tries++
+          if ($sshOut -match "([\w\-]+\.lhr\.life)") {
+            $rdpHost = $matches[1]
           }
 
           if (-not $rdpHost) {
-            Write-Host "=== CLOUDFLARE LOG ==="
-            Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
-            Write-Host "======================"
-            $rdpHost = "TUNNEL_FAILED"
+            Write-Host "localhost.run failed, trying serveo.net..."
+            $sshJob2 = Start-Job {
+              ssh -o StrictHostKeyChecking=no `
+                  -o ServerAliveInterval=60 `
+                  -R 3389:localhost:3389 `
+                  serveo.net 2>&1
+            }
+            Start-Sleep -Seconds 15
+            $sshOut2 = Receive-Job $sshJob2
+            Write-Host "Serveo Output: $sshOut2"
+            if ($sshOut2 -match "Forwarding TCP.*?(\d+\.\d+\.\d+\.\d+):(\d+)") {
+              $rdpHost = $matches[1]
+            }
+          }
+
+          if (-not $rdpHost) {
+            Write-Host "All tunnels failed — use AnyDesk!"
+            $rdpHost = "USE_ANYDESK"
           }
 
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
-          "$ID"      | Set-Content "C:\GamingVM\anydesk_id.txt"
 
           Write-Host "=========================================="
           Write-Host " >> LG TV - Add Remote PC <<"
@@ -160,7 +144,6 @@ jobs:
           Write-Host "  PASSWORD   : Github2026"
           Write-Host "=========================================="
 
-      # ── STEP 3: Keep Alive ───────────────────────────────────────────────
       - name: 3. Keep Alive
         shell: pwsh
         env:
@@ -192,7 +175,6 @@ jobs:
           }
           Write-Host "Time up — saving and restarting..."
 
-      # ── STEP 4: Save Everything ──────────────────────────────────────────
       - name: 4. Save Everything
         if: always()
         shell: pwsh
@@ -201,23 +183,18 @@ jobs:
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
           if (Test-Path "C:\MyApps") {
-            Write-Host "Saving your apps..."
-            & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" `
-              "C:\MyApps\*" -mx=3 -mmt=on -y
+            & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" "C:\MyApps\*" -mx=3 -mmt=on -y
           }
 
-          Write-Host "Saving AppData..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
             "C:\Users\runneradmin\AppData\*" `
             -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" `
             -xr!"Application Data" -xr!"History" -xr!"INetCache"
 
-          Write-Host "Saving Desktop..."
           & $7z a -t7z "C:\GamingVM\Backups\Desktop.7z" `
             "C:\Users\runneradmin\Desktop\*" -mx=3 -mmt=on -y
 
-          Write-Host "Saving Documents..."
           & $7z a -t7z "C:\GamingVM\Backups\Documents.7z" `
             "C:\Users\runneradmin\Documents\*" -mx=3 -mmt=on -y
 
@@ -228,7 +205,6 @@ jobs:
           }
           Write-Host "============================"
 
-      # ── STEP 5: Upload Cache ─────────────────────────────────────────────
       - name: 5. Upload Cache for Next Run
         if: always()
         uses: actions/cache/save@v4
@@ -236,7 +212,6 @@ jobs:
           path: C:\GamingVM
           key: gaming-vm-files-${{ github.run_number }}
 
-      # ── STEP 6: Auto Restart ─────────────────────────────────────────────
       - name: 6. Auto-Restart Workflow
         if: always()
         shell: pwsh
