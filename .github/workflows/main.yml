@@ -59,7 +59,7 @@ jobs:
           reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
             /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
 
-          # ── Enable RDP FIRST (most important for LG TV) ──
+          # ── Enable RDP ──
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" -Value 0
@@ -71,14 +71,11 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled!"
 
-          # ── Download AnyDesk + Cloudflare in parallel ──
-          $jobs = @(
-            Start-Job { curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe },
-            Start-Job { curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe }
-          )
-          Write-Host "Downloading tools..."
-          $jobs | Wait-Job | Out-Null
-          $jobs | Remove-Job
+          # ── Download tools one by one (most reliable) ──
+          Write-Host "Downloading AnyDesk..."
+          curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe
+          Write-Host "Downloading Cloudflare..."
+          curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           Write-Host "Downloads done!"
 
           # ── Install AnyDesk ──
@@ -88,7 +85,7 @@ jobs:
           echo "Github2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
           Write-Host "AnyDesk ready!"
 
-          # ── Start Cloudflare Tunnel for RDP ──
+          # ── Start Cloudflare Tunnel ──
           Start-Process C:\cloudflared.exe `
             -ArgumentList "tunnel --url tcp://localhost:3389 --logfile C:\cf.log --log-format=json" `
             -WindowStyle Hidden
@@ -125,7 +122,8 @@ jobs:
           if (-not $rdpHost) {
             Write-Host "=== CLOUDFLARE LOG ==="
             Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
-            Write-Host "Tunnel failed but continuing — use AnyDesk!"
+            Write-Host "Tunnel failed — use AnyDesk only!"
+            $rdpHost = "TUNNEL_FAILED"
           }
 
           # ── Get AnyDesk ID ──
@@ -141,13 +139,11 @@ jobs:
             $idTries++
           }
 
-          # ── Save info ──
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
-          "3389"     | Set-Content "C:\GamingVM\rdp_port.txt"
           "$ID"      | Set-Content "C:\GamingVM\anydesk_id.txt"
 
           Write-Host "=========================================="
-          Write-Host " >> LG TV Remote PC Settings <<"
+          Write-Host " >> LG TV - Add Remote PC <<"
           Write-Host "  PC ADDRESS : $rdpHost"
           Write-Host "  PORT       : 3389"
           Write-Host "  USERNAME   : runneradmin"
@@ -167,8 +163,8 @@ jobs:
           $ID      = Get-Content "C:\GamingVM\anydesk_id.txt" -ErrorAction SilentlyContinue
 
           Write-Host "=========================================="
-          Write-Host " RUN NUMBER : $env:RUN_NUMBER"
-          Write-Host " >> LG TV Remote PC <<"
+          Write-Host " RUN        : $env:RUN_NUMBER"
+          Write-Host " >> LG TV - Add Remote PC <<"
           Write-Host "  PC ADDRESS : $rdpHost"
           Write-Host "  PORT       : 3389"
           Write-Host "  USERNAME   : runneradmin"
@@ -207,7 +203,8 @@ jobs:
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
             "C:\Users\runneradmin\AppData\*" `
             -mx=3 -mmt=on -y `
-            -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache"
+            -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" `
+            -xr!"Application Data" -xr!"History" -xr!"INetCache"
 
           Write-Host "Saving Desktop..."
           & $7z a -t7z "C:\GamingVM\Backups\Desktop.7z" `
