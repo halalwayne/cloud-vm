@@ -94,7 +94,6 @@ jobs:
           } | Select-Object -First 1
 
           if (-not $asset) {
-            # Fallback direct download
             curl.exe -L -o "C:\bore.zip" `
               "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
           } else {
@@ -102,73 +101,54 @@ jobs:
           }
           Expand-Archive "C:\bore.zip" -DestinationPath "C:\bore" -Force
 
-          # Find bore.exe wherever it extracted
           $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" |
                      Select-Object -First 1 -ExpandProperty FullName
-          Write-Host "bore.exe found at: $boreExe"
+          Write-Host "bore.exe at: $boreExe"
 
-          # ── Start bore as background job to capture output ──
+          # ── Start bore tunnel ──
           Write-Host "Starting bore tunnel..."
           $boreJob = Start-Job -ScriptBlock {
             param($exe)
             & $exe local 3389 --to bore.pub 2>&1
           } -ArgumentList $boreExe
 
-          # ── Wait up to 60 seconds for port ──
-          $rdpHost = "bore.pub"
+          # ── Wait for port ──
           $rdpPort = ""
-
           for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 3
-            $out = Receive-Job $boreJob -Keep
+            $out  = Receive-Job $boreJob -Keep
             $text = $out -join "`n"
-            Write-Host "Bore output: $text"
-
             $match = [regex]::Match($text, "bore\.pub:(\d+)")
             if ($match.Success) {
               $rdpPort = $match.Groups[1].Value
-              Write-Host "Got port: $rdpPort"
               break
             }
-            # Also try plain number pattern after bore.pub
             $match2 = [regex]::Match($text, ":(\d{4,5})")
             if ($match2.Success) {
               $rdpPort = $match2.Groups[1].Value
-              Write-Host "Got port (fallback): $rdpPort"
               break
             }
           }
 
-          if (-not $rdpPort) {
-            Write-Host "Bore failed — trying SSH tunnel via serveo.net..."
-            # Serveo fallback via built-in Windows SSH
-            $rdpHost = "serveo.net"
-            $sshOut  = "C:\GamingVM\ssh_out.txt"
-            Start-Process -FilePath "ssh" `
-              -ArgumentList "-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 0:localhost:3389 serveo.net" `
-              -RedirectStandardOutput $sshOut `
-              -RedirectStandardError  $sshOut `
-              -WindowStyle Hidden
-
-            for ($i = 0; $i -lt 15; $i++) {
-              Start-Sleep -Seconds 3
-              $content = Get-Content $sshOut -Raw -ErrorAction SilentlyContinue
-              Write-Host "SSH output: $content"
-              $match = [regex]::Match($content, "Allocated port (\d+)")
-              if ($match.Success) {
-                $rdpPort = $match.Groups[1].Value
-                Write-Host "Got serveo port: $rdpPort"
-                break
-              }
-            }
+          # ── Resolve bore.pub to real IP for LG TV ──
+          # LG TV rejects hostnames — needs real IP address
+          $rdpIP = ""
+          try {
+            $rdpIP = [System.Net.Dns]::GetHostAddresses("bore.pub") |
+                     Where-Object { $_.AddressFamily -eq "InterNetwork" } |
+                     Select-Object -First 1 -ExpandProperty IPAddressToString
+            Write-Host "bore.pub resolved to IP: $rdpIP"
+          } catch {
+            Write-Host "DNS resolve failed: $_"
+            $rdpIP = "bore.pub"
           }
 
-          # ── Save connection details ──
-          "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
+          # ── Save both hostname and IP ──
+          "$rdpIP"   | Set-Content "C:\GamingVM\rdp_host.txt"
           "$rdpPort" | Set-Content "C:\GamingVM\rdp_port.txt"
 
           Write-Host "=========================================="
-          Write-Host "  RDP HOST : $rdpHost"
+          Write-Host "  RDP IP   : $rdpIP   ← USE THIS ON TV"
           Write-Host "  RDP PORT : $rdpPort"
           Write-Host "  USERNAME : runneradmin"
           Write-Host "  PASSWORD : GitHub@2026"
@@ -199,13 +179,12 @@ jobs:
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  RDP HOST   : $rdpHost"
-          Write-Host "  RDP PORT   : $rdpPort"
+          Write-Host "  ── LG TV RDP ──"
+          Write-Host "  IP ADDRESS : $rdpHost  ← TYPE THIS"
+          Write-Host "  PORT       : $rdpPort  ← TICK Include Port"
           Write-Host "  USERNAME   : runneradmin"
-          Write-Host "  RDP PASS   : GitHub@2026"
+          Write-Host "  PASSWORD   : GitHub@2026"
           Write-Host "=========================================="
-          Write-Host "LG TV: Home > Home Office > Connect Remote PC"
-          Write-Host "Enter Host: $rdpHost  Port: $rdpPort"
 
           $cutoff = [DateTime]::Now.AddHours(5).AddMinutes(30)
           $warned = $false
@@ -237,12 +216,12 @@ jobs:
           Write-Host "Saving installed apps..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" `
             "C:\Program Files\*" -mx=3 -mmt=on -y @excludeArgs
-          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped" }
 
           Write-Host "Saving 32-bit apps..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" `
             "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeArgs
-          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped" }
 
           Write-Host "Saving app settings..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
@@ -250,14 +229,14 @@ jobs:
             -mx=3 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" `
             -xr!"Local\Packages" -xr!"Local\Microsoft\Windows"
-          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped" }
 
           Write-Host "Saving ProgramData..."
           & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" `
             "C:\ProgramData\*" `
             -mx=3 -mmt=on -y `
             -xr!"Microsoft" -xr!"Windows" -xr!"USOPrivate" -xr!"USOShared"
-          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped (locked)" }
+          if ($LASTEXITCODE -gt 1) { Write-Host "Some files skipped" }
 
           Write-Host "Saving registry..."
           reg export "HKLM\SOFTWARE" `
