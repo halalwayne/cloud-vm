@@ -39,12 +39,10 @@ jobs:
           }
 
           if (Test-Path "C:\GamingVM\Backups\Desktop.7z") {
-            Write-Host "Restoring Desktop..."
             & $7z x "C:\GamingVM\Backups\Desktop.7z" -o"C:\Users\runneradmin\Desktop\" -y
           }
 
           if (Test-Path "C:\GamingVM\Backups\Documents.7z") {
-            Write-Host "Restoring Documents..."
             & $7z x "C:\GamingVM\Backups\Documents.7z" -o"C:\Users\runneradmin\Documents\" -y
           }
 
@@ -71,12 +69,16 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP Enabled!"
 
-          # ── Download tools one by one (most reliable) ──
+          # ── Download AnyDesk ──
           Write-Host "Downloading AnyDesk..."
-          curl.exe -L -s -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe
+          curl.exe -L -o C:\anydesk.exe https://download.anydesk.com/AnyDesk.exe
+          Write-Host "AnyDesk downloaded!"
+
+          # ── Download Cloudflare (fixed URL) ──
           Write-Host "Downloading Cloudflare..."
-          curl.exe -L -s -o C:\cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-          Write-Host "Downloads done!"
+          $cfUrl = "https://github.com/cloudflare/cloudflared/releases/download/2025.1.1/cloudflared-windows-amd64.exe"
+          curl.exe -L -o C:\cloudflared.exe $cfUrl
+          Write-Host "Cloudflare downloaded! Size: $((Get-Item C:\cloudflared.exe).Length) bytes"
 
           # ── Install AnyDesk ──
           Start-Process C:\anydesk.exe `
@@ -84,6 +86,24 @@ jobs:
           Start-Sleep -Seconds 5
           echo "Github2026" | & "C:\AnyDesk\AnyDesk.exe" --set-password
           Write-Host "AnyDesk ready!"
+
+          # ── Get AnyDesk ID early so it shows even if tunnel fails ──
+          $idFile = "C:\ProgramData\AnyDesk\system.conf"
+          $ID = ""
+          $idTries = 0
+          while (!$ID -and $idTries -lt 20) {
+            if (Test-Path $idFile) {
+              $ID = Select-String -Path $idFile -Pattern "ad.anynet.id=(.*)" |
+                    ForEach-Object { $_.Matches.Groups[1].Value }
+            }
+            if (!$ID) { Start-Sleep -Seconds 3 }
+            $idTries++
+          }
+
+          Write-Host "=========================================="
+          Write-Host "  ANYDESK ID : $ID"
+          Write-Host "  PASSWORD   : Github2026"
+          Write-Host "=========================================="
 
           # ── Start Cloudflare Tunnel ──
           Start-Process C:\cloudflared.exe `
@@ -93,7 +113,7 @@ jobs:
           # ── Wait for tunnel URL ──
           $rdpHost = $null
           $tries = 0
-          while ($tries -lt 40) {
+          while ($tries -lt 30) {
             Start-Sleep -Seconds 3
             if (Test-Path "C:\cf.log") {
               $lines = Get-Content "C:\cf.log"
@@ -122,21 +142,8 @@ jobs:
           if (-not $rdpHost) {
             Write-Host "=== CLOUDFLARE LOG ==="
             Get-Content "C:\cf.log" -ErrorAction SilentlyContinue
-            Write-Host "Tunnel failed — use AnyDesk only!"
+            Write-Host "======================"
             $rdpHost = "TUNNEL_FAILED"
-          }
-
-          # ── Get AnyDesk ID ──
-          $idFile = "C:\ProgramData\AnyDesk\system.conf"
-          $ID = ""
-          $idTries = 0
-          while (!$ID -and $idTries -lt 20) {
-            if (Test-Path $idFile) {
-              $ID = Select-String -Path $idFile -Pattern "ad.anynet.id=(.*)" |
-                    ForEach-Object { $_.Matches.Groups[1].Value }
-            }
-            if (!$ID) { Start-Sleep -Seconds 3 }
-            $idTries++
           }
 
           "$rdpHost" | Set-Content "C:\GamingVM\rdp_host.txt"
