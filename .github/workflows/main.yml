@@ -50,7 +50,6 @@ jobs:
           Write-Host "All restored!"
 
       # ── STEP 2: Performance + AnyDesk + RDP Setup ──────────────────────
-      # NOTE: Bore is NOT started here — it starts in Step 3
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
         run: |
@@ -58,6 +57,23 @@ jobs:
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
           reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
             /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
+
+          # ── Disable Lock Screen + Screensaver Forever ──
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+            /v DisableLockWorkstation /t REG_DWORD /d 1 /f
+          reg add "HKCU\Control Panel\Desktop" `
+            /v ScreenSaveActive /t REG_SZ /d "0" /f
+          reg add "HKCU\Control Panel\Desktop" `
+            /v ScreenSaverIsSecure /t REG_SZ /d "0" /f
+          reg add "HKCU\Control Panel\Desktop" `
+            /v ScreenSaveTimeOut /t REG_SZ /d "0" /f
+          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" `
+            /v NoLockScreen /t REG_DWORD /d 1 /f
+          powercfg /change standby-timeout-ac 0
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change hibernate-timeout-ac 0
+          powercfg /change disk-timeout-ac 0
+          Write-Host "Lock screen and screensaver disabled permanently"
 
           # ── Visual C++ ──
           curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
@@ -106,7 +122,7 @@ jobs:
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP ready — NLA disabled"
 
-          # ── Download bore (save to C:\bore.exe for Step 3 to use) ──
+          # ── Download bore ──
           Write-Host "Downloading bore..."
           $release = Invoke-RestMethod `
             "https://api.github.com/repos/ekzhang/bore/releases/latest"
@@ -124,10 +140,9 @@ jobs:
           $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" |
                      Select-Object -First 1 -ExpandProperty FullName
           Copy-Item $boreExe "C:\bore.exe" -Force
-          Write-Host "bore.exe saved to C:\bore.exe — will start in Step 3"
+          Write-Host "bore.exe ready"
 
-      # ── STEP 3: Start Bore HERE + AnyDesk + Keep Alive ─────────────────
-      # Bore starts and stays alive in THIS step — no more dying between steps
+      # ── STEP 3: Start Bore + AnyDesk + Keep Alive ──────────────────────
       - name: 3. Session Info & Keep Alive
         shell: pwsh
         env:
@@ -146,7 +161,7 @@ jobs:
           }
           Write-Host "AnyDesk ID: $ID"
 
-          # ── Start bore tunnel HERE in Step 3 so it stays alive ──
+          # ── Start bore tunnel in Step 3 so it stays alive ──
           $outFile = "C:\GamingVM\bore_out.txt"
           $errFile = "C:\GamingVM\bore_err.txt"
           "" | Set-Content $outFile
@@ -165,7 +180,7 @@ jobs:
           $boreProcess = Start-Bore
           Write-Host "Bore started with PID: $($boreProcess.Id)"
 
-          # ── Wait up to 60 seconds for port ──
+          # ── Wait for port ──
           $rdpPort = ""
           for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 3
@@ -197,7 +212,7 @@ jobs:
           Write-Host "  BORE PID   : $($boreProcess.Id)"
           Write-Host "=========================================="
 
-          # ── Keep alive loop — watches bore and restarts if it dies ──
+          # ── Keep alive loop ──
           $cutoff  = [DateTime]::Now.AddHours(5).AddMinutes(30)
           $warned  = $false
           $counter = 0
@@ -206,15 +221,11 @@ jobs:
             Start-Sleep -Seconds 60
             $counter++
 
-            # Check if bore is still running — restart if dead
+            # Restart bore if dead
             if ($boreProcess.HasExited) {
-              Write-Host "Bore died! Restarting..."
-              "" | Set-Content $outFile
-              "" | Set-Content $errFile
+              Write-Host "Bore died — restarting..."
               $boreProcess = Start-Bore
               Start-Sleep -Seconds 8
-
-              # Get new port
               $out  = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
               $err  = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
               $text = "$out`n$err"
@@ -222,12 +233,9 @@ jobs:
               if ($m.Success) { $rdpPort = $m.Groups[1].Value }
               $m2 = [regex]::Match($text, "remote_port=(\d+)")
               if ($m2.Success) { $rdpPort = $m2.Groups[1].Value }
-
-              Write-Host "Bore restarted! New port: $rdpPort"
-              Write-Host "NEW IP:PORT → $rdpIP`:$rdpPort"
+              Write-Host "Bore restarted! New IP:PORT → $rdpIP`:$rdpPort"
             }
 
-            # Print status every 30 mins
             if ($counter % 30 -eq 0) {
               Write-Host "-- Still alive -- RDP: $rdpIP`:$rdpPort | AnyDesk: $ID --"
             }
