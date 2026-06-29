@@ -158,6 +158,42 @@ jobs:
           Copy-Item $boreExe "C:\bore.exe" -Force
           Write-Host "bore.exe ready"
 
+          # ── Write the background auto-save script ──────────────────────
+          $saveScript = 'param([string]$RcloneConf)
+          $7z = "C:\Program Files\7-Zip\7z.exe"
+          $interval = 30  # minutes between saves
+
+          function Do-Save {
+            $stamp = Get-Date -Format "HH:mm:ss"
+            Write-Host "[$stamp] AUTO-SAVE starting..."
+
+            $excludeProgFiles = @("-xr!WindowsApps","-xr!Windows NT","-xr!Internet Explorer","-xr!Common Files\microsoft shared","-xr!ModifiableWindowsApps")
+            $excludeProgData  = @("-xr!Microsoft","-xr!Windows","-xr!USOPrivate","-xr!USOShared","-xr!docker","-xr!GitHub","-xr!ssh")
+
+            & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z"   "C:\Program Files\*"              -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
+            & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" "C:\Program Files (x86)\*"        -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
+            & $7z a -t7z "C:\GamingVM\Backups\AppData.7z"        "C:\Users\runneradmin\AppData\*"  -mx=1 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" 2>&1 | Out-Null
+            & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z"    "C:\ProgramData\*"                -mx=1 -mmt=on -y @excludeProgData  2>&1 | Out-Null
+            reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
+            reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+
+            Write-Host "[$stamp] Compressed. Uploading to Mega..."
+            & C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --config $RcloneConf --transfers=4 --retries=2 2>&1
+            $stamp2 = Get-Date -Format "HH:mm:ss"
+            Write-Host "[$stamp2] AUTO-SAVE done."
+          }
+
+          # Wait 30 min before first save so initial setup is complete
+          Start-Sleep -Seconds ($interval * 60)
+
+          while ($true) {
+            Do-Save
+            Start-Sleep -Seconds ($interval * 60)
+          }
+          '
+          $saveScript | Set-Content "C:\GamingVM\autosave.ps1"
+          Write-Host "Auto-save script written"
+
       # ── STEP 3: Start Bore + AnyDesk + Keep Alive ──────────────────────
       - name: 3. Session Info & Keep Alive
         shell: pwsh
@@ -209,6 +245,13 @@ jobs:
                      Select-Object -First 1 -ExpandProperty IPAddressToString
           } catch { $rdpIP = "bore.pub" }
 
+          # ── Start background auto-save process ──
+          $rcloneConf = "$env:APPDATA\rclone\rclone.conf"
+          $autoSaveProc = Start-Process powershell `
+            -ArgumentList "-NonInteractive -WindowStyle Hidden -File C:\GamingVM\autosave.ps1 -RcloneConf `"$rcloneConf`"" `
+            -PassThru -WindowStyle Hidden
+          Write-Host "Auto-save started (PID: $($autoSaveProc.Id)) — saves every 30 min"
+
           Write-Host "=========================================="
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
@@ -217,6 +260,7 @@ jobs:
           Write-Host "  TYPE THIS  : $rdpIP`:$rdpPort"
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
+          Write-Host "  AUTO-SAVE  : every 30 min to Mega"
           Write-Host "=========================================="
 
           $cutoff  = [DateTime]::Now.AddHours(5).AddMinutes(30)
@@ -246,14 +290,17 @@ jobs:
             }
 
             if (!$warned -and ([DateTime]::Now -gt $cutoff.AddMinutes(-10))) {
-              Write-Host "WARNING: 10 mins until restart — save your work!"
+              Write-Host "WARNING: 10 mins until restart — final save coming up!"
               $warned = $true
             }
           }
-          Write-Host "5.5 hrs reached — saving and restarting..."
 
-      # ── STEP 4: Save Everything to Mega ─────────────────────────────────
-      - name: 4. Save Everything to Mega
+          # Stop auto-save before final save takes over
+          Stop-Process -Id $autoSaveProc.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "5.5 hrs reached — running final save..."
+
+      # ── STEP 4: Final Save to Mega ───────────────────────────────────────
+      - name: 4. Final Save to Mega
         if: always()
         shell: pwsh
         run: |
@@ -267,7 +314,6 @@ jobs:
             "-xr!Common Files\microsoft shared",
             "-xr!ModifiableWindowsApps"
           )
-
           $excludeProgData = @(
             "-xr!Microsoft",
             "-xr!Windows",
@@ -296,7 +342,7 @@ jobs:
 
           Write-Host "Saving registry..."
           reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
-          reg export "HKCU" "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+          reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
 
           Write-Host "======= Backup Sizes ======="
           Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
@@ -305,10 +351,10 @@ jobs:
           }
           Write-Host "============================"
 
-          Write-Host "Uploading to Mega..."
+          Write-Host "Uploading final backup to Mega..."
           C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --progress --transfers=4 --retries=3 --stats=30s 2>&1
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Upload to Mega complete!"
+            Write-Host "Final upload to Mega complete!"
           } else {
             Write-Host "WARNING: Upload may have had issues (exit: $LASTEXITCODE)"
           }
