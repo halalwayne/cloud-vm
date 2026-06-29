@@ -16,30 +16,26 @@ jobs:
           TERABOX_USER: ${{ secrets.TERABOX_USER }}
           TERABOX_PASS: ${{ secrets.TERABOX_PASS }}
         run: |
-          # Install rclone
           Write-Host "Installing rclone..."
-          Invoke-WebRequest https://downloads.rclone.org/rclone-current-windows-amd64.zip `
-            -OutFile C:\rclone.zip
+          Invoke-WebRequest https://downloads.rclone.org/rclone-current-windows-amd64.zip -OutFile C:\rclone.zip
           Expand-Archive C:\rclone.zip -DestinationPath C:\rclone_tmp -Force
-          $exe = Get-ChildItem C:\rclone_tmp -Recurse -Filter rclone.exe |
-                 Select-Object -First 1 -ExpandProperty FullName
+          $exe = Get-ChildItem C:\rclone_tmp -Recurse -Filter rclone.exe | Select-Object -First 1 -ExpandProperty FullName
           Copy-Item $exe C:\rclone.exe -Force
           Write-Host "rclone ready"
 
-          # Configure rclone for Terabox WebDAV
-          $config = @"
-[terabox]
-type = webdav
-url = https://webdav.terabox.com
-vendor = other
-user = $env:TERABOX_USER
-pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
-"@
           New-Item -Path "$env:APPDATA\rclone" -ItemType Directory -Force | Out-Null
-          $config | Set-Content "$env:APPDATA\rclone\rclone.conf"
+          $obscured = & C:\rclone.exe obscure "$env:TERABOX_PASS"
+          $lines = @(
+            "[terabox]",
+            "type = webdav",
+            "url = https://webdav.terabox.com",
+            "vendor = other",
+            "user = $env:TERABOX_USER",
+            "pass = $obscured"
+          )
+          $lines | Set-Content "$env:APPDATA\rclone\rclone.conf"
           Write-Host "Terabox configured"
 
-          # Test connection
           Write-Host "Testing Terabox connection..."
           C:\rclone.exe lsd terabox: --max-depth 1
           if ($LASTEXITCODE -ne 0) {
@@ -61,35 +57,28 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
           New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
-          # Download backups from Terabox
           Write-Host "Downloading backups from Terabox..."
-          C:\rclone.exe copy terabox:GamingVM/Backups "C:\GamingVM\Backups" `
-            --progress --transfers=4 --retries=3 2>&1
+          C:\rclone.exe copy terabox:GamingVM/Backups "C:\GamingVM\Backups" --progress --transfers=4 --retries=3 2>&1
           Write-Host "Download done (exit: $LASTEXITCODE)"
 
-          # Restore Program Files
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
             Write-Host "Restoring installed apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" `
-              -o"C:\Program Files\" -y 2>&1 | Out-Null
+            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" -o"C:\Program Files\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
             Write-Host "Restoring 32-bit apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" `
-              -o"C:\Program Files (x86)\" -y 2>&1 | Out-Null
+            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" -o"C:\Program Files (x86)\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
             Write-Host "Restoring app settings..."
-            & $7z x "C:\GamingVM\Backups\AppData.7z" `
-              -o"C:\Users\runneradmin\" -y 2>&1 | Out-Null
+            & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
           if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
             Write-Host "Restoring ProgramData..."
-            & $7z x "C:\GamingVM\Backups\ProgramData.7z" `
-              -o"C:\ProgramData\" -y 2>&1 | Out-Null
+            & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
           if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
@@ -108,38 +97,26 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
       - name: 2. Unlock Performance + Enable RDP + AnyDesk
         shell: pwsh
         run: |
-          # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-          reg add "HKEY_CURRENT_USER\Control Panel\Desktop" `
-            /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
+          reg add "HKEY_CURRENT_USER\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
 
-          # ── Disable Lock Screen + Screensaver Forever ──
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
-            /v DisableLockWorkstation /t REG_DWORD /d 1 /f
-          reg add "HKCU\Control Panel\Desktop" `
-            /v ScreenSaveActive /t REG_SZ /d "0" /f
-          reg add "HKCU\Control Panel\Desktop" `
-            /v ScreenSaverIsSecure /t REG_SZ /d "0" /f
-          reg add "HKCU\Control Panel\Desktop" `
-            /v ScreenSaveTimeOut /t REG_SZ /d "0" /f
-          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" `
-            /v NoLockScreen /t REG_DWORD /d 1 /f
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableLockWorkstation /t REG_DWORD /d 1 /f
+          reg add "HKCU\Control Panel\Desktop" /v ScreenSaveActive /t REG_SZ /d "0" /f
+          reg add "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure /t REG_SZ /d "0" /f
+          reg add "HKCU\Control Panel\Desktop" /v ScreenSaveTimeOut /t REG_SZ /d "0" /f
+          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f
           powercfg /change standby-timeout-ac 0
           powercfg /change monitor-timeout-ac 0
           powercfg /change hibernate-timeout-ac 0
           powercfg /change disk-timeout-ac 0
           Write-Host "Lock screen disabled permanently"
 
-          # ── Visual C++ ──
           curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
           Start-Process ./vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
 
-          # ── AnyDesk ──
           curl.exe -L -o anydesk.exe https://download.anydesk.com/AnyDesk.exe
-          Start-Process ./anydesk.exe `
-            -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
+          Start-Process ./anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
-          # ── Spoof Windows Server as Windows 10 Pro for LG TV ──
           $cv = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
           Set-ItemProperty -Path $cv -Name "ProductName"               -Value "Windows 10 Pro"
           Set-ItemProperty -Path $cv -Name "EditionID"                 -Value "Professional"
@@ -150,50 +127,36 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
           Set-ItemProperty -Path $cv -Name "CurrentVersion"            -Value "10.0"
           Write-Host "OS spoofed as Windows 10 Pro"
 
-          # ── Enable RDP ──
-          Set-ItemProperty `
-            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
 
-          # ── Disable NLA for LG TV ──
           $rdpTcp = "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
           Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication" -Value 0
           Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"      -Value 0
           Set-ItemProperty -Path $rdpTcp -Name "MinEncryptionLevel" -Value 1
 
-          # ── Restart RDP service ──
           Stop-Service  "TermService" -Force -ErrorAction SilentlyContinue
           Start-Sleep   -Seconds 3
           Start-Service "TermService"
           Start-Sleep   -Seconds 2
 
-          # ── Firewall ──
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          netsh advfirewall firewall add rule `
-            name="RDP-3389" protocol=TCP dir=in localport=3389 action=allow
+          netsh advfirewall firewall add rule name="RDP-3389" protocol=TCP dir=in localport=3389 action=allow
 
-          # ── User ──
           net user runneradmin "GitHub@2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP ready"
 
-          # ── Download bore ──
           Write-Host "Downloading bore..."
-          $release = Invoke-RestMethod `
-            "https://api.github.com/repos/ekzhang/bore/releases/latest"
-          $asset = $release.assets | Where-Object {
-            $_.name -like "*x86_64*windows*"
-          } | Select-Object -First 1
+          $release = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*x86_64*windows*" } | Select-Object -First 1
 
           if (-not $asset) {
-            curl.exe -L -o "C:\bore.zip" `
-              "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
+            curl.exe -L -o "C:\bore.zip" "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
           } else {
             curl.exe -L -o "C:\bore.zip" $asset.browser_download_url
           }
           Expand-Archive "C:\bore.zip" -DestinationPath "C:\bore" -Force
-          $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" |
-                     Select-Object -First 1 -ExpandProperty FullName
+          $boreExe = Get-ChildItem "C:\bore" -Recurse -Filter "bore.exe" | Select-Object -First 1 -ExpandProperty FullName
           Copy-Item $boreExe "C:\bore.exe" -Force
           Write-Host "bore.exe ready"
 
@@ -318,35 +281,24 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
           )
 
           Write-Host "Saving installed apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" `
-            "C:\Program Files\*" -mx=3 -mmt=on -y @excludeProgFiles
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" "C:\Program Files\*" -mx=3 -mmt=on -y @excludeProgFiles
           Write-Host "Done (exit: $LASTEXITCODE)"
 
           Write-Host "Saving 32-bit apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" `
-            "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeProgFiles
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeProgFiles
           Write-Host "Done (exit: $LASTEXITCODE)"
 
           Write-Host "Saving app settings..."
-          & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" `
-            "C:\Users\runneradmin\AppData\*" `
-            -mx=3 -mmt=on -y `
-            -xr!"Temp" -xr!"Local\Temp" `
-            -xr!"cache" -xr!"Cache" `
-            -xr!"Local\Packages" `
-            -xr!"Local\Microsoft\Windows"
+          & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows"
           Write-Host "Done (exit: $LASTEXITCODE)"
 
           Write-Host "Saving ProgramData..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" `
-            "C:\ProgramData\*" -mx=3 -mmt=on -y @excludeProgData
+          & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" "C:\ProgramData\*" -mx=3 -mmt=on -y @excludeProgData
           Write-Host "Done (exit: $LASTEXITCODE)"
 
           Write-Host "Saving registry..."
-          reg export "HKLM\SOFTWARE" `
-            "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
-          reg export "HKCU" `
-            "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+          reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
+          reg export "HKCU" "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
 
           Write-Host "======= Backup Sizes ======="
           Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
@@ -355,11 +307,8 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
           }
           Write-Host "============================"
 
-          # Upload to Terabox via rclone
           Write-Host "Uploading to Terabox..."
-          C:\rclone.exe copy "C:\GamingVM\Backups" terabox:GamingVM/Backups `
-            --progress --transfers=4 --retries=3 `
-            --stats=30s 2>&1
+          C:\rclone.exe copy "C:\GamingVM\Backups" terabox:GamingVM/Backups --progress --transfers=4 --retries=3 --stats=30s 2>&1
           if ($LASTEXITCODE -eq 0) {
             Write-Host "Upload to Terabox complete!"
           } else {
@@ -384,8 +333,7 @@ pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
           }
           $body = @{ ref = $env:BRANCH } | ConvertTo-Json
           try {
-            Invoke-RestMethod -Uri $uri -Method POST `
-              -Headers $headers -Body $body -ContentType "application/json"
+            Invoke-RestMethod -Uri $uri -Method POST -Headers $headers -Body $body -ContentType "application/json"
             Write-Host "New run triggered successfully"
           } catch {
             Write-Host "Failed to trigger: $_"
