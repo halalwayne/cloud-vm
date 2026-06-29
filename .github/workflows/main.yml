@@ -9,12 +9,12 @@ jobs:
 
     steps:
 
-      # ── STEP 0: Setup rclone + Terabox ──────────────────────────────────
-      - name: 0. Setup rclone & Terabox
+      # ── STEP 0: Setup rclone + Mega ─────────────────────────────────────
+      - name: 0. Setup rclone & Mega
         shell: pwsh
         env:
-          TERABOX_USER: ${{ secrets.TERABOX_USER }}
-          TERABOX_PASS: ${{ secrets.TERABOX_PASS }}
+          MEGA_USER: ${{ secrets.MEGA_USER }}
+          MEGA_PASS: ${{ secrets.MEGA_PASS }}
         run: |
           Write-Host "Installing rclone..."
           Invoke-WebRequest https://downloads.rclone.org/rclone-current-windows-amd64.zip -OutFile C:\rclone.zip
@@ -24,28 +24,26 @@ jobs:
           Write-Host "rclone ready"
 
           New-Item -Path "$env:APPDATA\rclone" -ItemType Directory -Force | Out-Null
-          $obscured = & C:\rclone.exe obscure "$env:TERABOX_PASS"
+          $obscured = & C:\rclone.exe obscure "$env:MEGA_PASS"
           $lines = @(
-            "[terabox]",
-            "type = webdav",
-            "url = https://webdav.terabox.com",
-            "vendor = other",
-            "user = $env:TERABOX_USER",
+            "[mega]",
+            "type = mega",
+            "user = $env:MEGA_USER",
             "pass = $obscured"
           )
           $lines | Set-Content "$env:APPDATA\rclone\rclone.conf"
-          Write-Host "Terabox configured"
+          Write-Host "Mega configured"
 
-          Write-Host "Testing Terabox connection..."
-          C:\rclone.exe lsd terabox: --max-depth 1
+          Write-Host "Testing Mega connection..."
+          C:\rclone.exe lsd mega: --max-depth 1
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARNING: Could not connect to Terabox. Check credentials."
+            Write-Host "WARNING: Could not connect to Mega. Check credentials."
           } else {
-            Write-Host "Terabox connection OK"
+            Write-Host "Mega connection OK"
           }
 
-      # ── STEP 1: Restore Everything from Terabox ─────────────────────────
-      - name: 1. Restore Everything from Terabox
+      # ── STEP 1: Restore Everything from Mega ────────────────────────────
+      - name: 1. Restore Everything from Mega
         shell: pwsh
         run: |
           $7z = "C:\Program Files\7-Zip\7z.exe"
@@ -57,8 +55,8 @@ jobs:
           New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
-          Write-Host "Downloading backups from Terabox..."
-          C:\rclone.exe copy terabox:GamingVM/Backups "C:\GamingVM\Backups" --progress --transfers=4 --retries=3 2>&1
+          Write-Host "Downloading backups from Mega..."
+          C:\rclone.exe copy mega:GamingVM/Backups "C:\GamingVM\Backups" --progress --transfers=4 --retries=3 2>&1
           Write-Host "Download done (exit: $LASTEXITCODE)"
 
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
@@ -254,8 +252,8 @@ jobs:
           }
           Write-Host "5.5 hrs reached — saving and restarting..."
 
-      # ── STEP 4: Save Everything to Terabox ──────────────────────────────
-      - name: 4. Save Everything to Terabox
+      # ── STEP 4: Save Everything to Mega ─────────────────────────────────
+      - name: 4. Save Everything to Mega
         if: always()
         shell: pwsh
         run: |
@@ -307,10 +305,10 @@ jobs:
           }
           Write-Host "============================"
 
-          Write-Host "Uploading to Terabox..."
-          C:\rclone.exe copy "C:\GamingVM\Backups" terabox:GamingVM/Backups --progress --transfers=4 --retries=3 --stats=30s 2>&1
+          Write-Host "Uploading to Mega..."
+          C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --progress --transfers=4 --retries=3 --stats=30s 2>&1
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Upload to Terabox complete!"
+            Write-Host "Upload to Mega complete!"
           } else {
             Write-Host "WARNING: Upload may have had issues (exit: $LASTEXITCODE)"
           }
