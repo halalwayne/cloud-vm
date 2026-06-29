@@ -9,26 +9,65 @@ jobs:
 
     steps:
 
-      # ── STEP 0: Restore Everything ──────────────────────────────────────
-      - name: 0. Restore Everything
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\GamingVM
-          key: gaming-vm-files
-          restore-keys: gaming-vm-files
+      # ── STEP 0: Setup rclone + Terabox ──────────────────────────────────
+      - name: 0. Setup rclone & Terabox
+        shell: pwsh
+        env:
+          TERABOX_USER: ${{ secrets.TERABOX_USER }}
+          TERABOX_PASS: ${{ secrets.TERABOX_PASS }}
+        run: |
+          # Install rclone
+          Write-Host "Installing rclone..."
+          Invoke-WebRequest https://downloads.rclone.org/rclone-current-windows-amd64.zip `
+            -OutFile C:\rclone.zip
+          Expand-Archive C:\rclone.zip -DestinationPath C:\rclone_tmp -Force
+          $exe = Get-ChildItem C:\rclone_tmp -Recurse -Filter rclone.exe |
+                 Select-Object -First 1 -ExpandProperty FullName
+          Copy-Item $exe C:\rclone.exe -Force
+          Write-Host "rclone ready"
 
-      # ── STEP 1: Reinstall Apps From Backup ─────────────────────────────
-      - name: 1. Reinstall Apps From Backup
+          # Configure rclone for Terabox WebDAV
+          $config = @"
+[terabox]
+type = webdav
+url = https://webdav.terabox.com
+vendor = other
+user = $env:TERABOX_USER
+pass = $(C:\rclone.exe obscure "$env:TERABOX_PASS")
+"@
+          New-Item -Path "$env:APPDATA\rclone" -ItemType Directory -Force | Out-Null
+          $config | Set-Content "$env:APPDATA\rclone\rclone.conf"
+          Write-Host "Terabox configured"
+
+          # Test connection
+          Write-Host "Testing Terabox connection..."
+          C:\rclone.exe lsd terabox: --max-depth 1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: Could not connect to Terabox. Check credentials."
+          } else {
+            Write-Host "Terabox connection OK"
+          }
+
+      # ── STEP 1: Restore Everything from Terabox ─────────────────────────
+      - name: 1. Restore Everything from Terabox
         shell: pwsh
         run: |
           $7z = "C:\Program Files\7-Zip\7z.exe"
           if (-not (Test-Path $7z)) {
             choco install 7zip -y --no-progress
           }
+
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
           New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
 
+          # Download backups from Terabox
+          Write-Host "Downloading backups from Terabox..."
+          C:\rclone.exe copy terabox:GamingVM/Backups "C:\GamingVM\Backups" `
+            --progress --transfers=4 --retries=3 2>&1
+          Write-Host "Download done (exit: $LASTEXITCODE)"
+
+          # Restore Program Files
           if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
             Write-Host "Restoring installed apps..."
             & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" `
@@ -60,7 +99,6 @@ jobs:
             reg import "C:\GamingVM\Backups\Registry_HKCU.reg" 2>&1 | Out-Null
           }
 
-          # Always exit 0 — locked files during restore are normal
           Write-Host "==============================="
           Write-Host "All restored!"
           Write-Host "==============================="
@@ -253,8 +291,8 @@ jobs:
           }
           Write-Host "5.5 hrs reached — saving and restarting..."
 
-      # ── STEP 4: Save Everything ──────────────────────────────────────────
-      - name: 4. Save Everything
+      # ── STEP 4: Save Everything to Terabox ──────────────────────────────
+      - name: 4. Save Everything to Terabox
         if: always()
         shell: pwsh
         run: |
@@ -269,7 +307,6 @@ jobs:
             "-xr!ModifiableWindowsApps"
           )
 
-          # Extra excludes for ProgramData — skip locked system folders
           $excludeProgData = @(
             "-xr!Microsoft",
             "-xr!Windows",
@@ -317,18 +354,21 @@ jobs:
             Write-Host "$($_.Name) = $size MB"
           }
           Write-Host "============================"
+
+          # Upload to Terabox via rclone
+          Write-Host "Uploading to Terabox..."
+          C:\rclone.exe copy "C:\GamingVM\Backups" terabox:GamingVM/Backups `
+            --progress --transfers=4 --retries=3 `
+            --stats=30s 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Upload to Terabox complete!"
+          } else {
+            Write-Host "WARNING: Upload may have had issues (exit: $LASTEXITCODE)"
+          }
           exit 0
 
-      # ── STEP 5: Upload Cache ─────────────────────────────────────────────
-      - name: 5. Upload Cache for Next Run
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: C:\GamingVM
-          key: gaming-vm-files-${{ github.run_number }}
-
-      # ── STEP 6: Auto Restart ─────────────────────────────────────────────
-      - name: 6. Auto-Restart Workflow
+      # ── STEP 5: Auto Restart ─────────────────────────────────────────────
+      - name: 5. Auto-Restart Workflow
         if: always()
         shell: pwsh
         env:
