@@ -91,8 +91,8 @@ jobs:
           Write-Host "==============================="
           exit 0
 
-      # ── STEP 2: Performance + AnyDesk + RDP Setup ──────────────────────
-      - name: 2. Unlock Performance + Enable RDP + AnyDesk
+      # ── STEP 2: Performance + Docker + AnyDesk + RDP Setup ─────────────
+      - name: 2. Unlock Performance + Enable RDP + AnyDesk + Docker
         shell: pwsh
         run: |
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
@@ -112,6 +112,32 @@ jobs:
           curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
           Start-Process ./vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
 
+          # ── Enable WSL2 + Hyper-V (required for Docker Desktop) ──
+          Write-Host "Enabling WSL2 and Hyper-V features..."
+          dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart 2>&1 | Out-Null
+          dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart 2>&1 | Out-Null
+          dism.exe /online /enable-feature /featurename:Microsoft-Hyper-V-All /all /norestart 2>&1 | Out-Null
+          Write-Host "Features enabled"
+
+          # ── Install Docker Desktop silently (no logout needed) ──
+          Write-Host "Downloading Docker Desktop..."
+          curl.exe -L -o "C:\DockerDesktopInstaller.exe" "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+          Write-Host "Installing Docker Desktop silently..."
+          Start-Process "C:\DockerDesktopInstaller.exe" `
+            -ArgumentList "install --quiet --accept-license --backend=wsl-2 --always-run-service" `
+            -Wait -NoNewWindow
+          Write-Host "Docker Desktop installed"
+
+          # ── Add runneradmin to docker-users group ──
+          net localgroup "docker-users" "runneradmin" /add 2>&1 | Out-Null
+          Write-Host "runneradmin added to docker-users"
+
+          # ── Start Docker service ──
+          Start-Service "com.docker.service" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Write-Host "Docker service started"
+
+          # ── AnyDesk ──
           curl.exe -L -o anydesk.exe https://download.anydesk.com/AnyDesk.exe
           Start-Process ./anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
@@ -166,26 +192,21 @@ jobs:
           function Do-Save {
             $stamp = Get-Date -Format "HH:mm:ss"
             Write-Host "[$stamp] AUTO-SAVE starting..."
-
             $excludeProgFiles = @("-xr!WindowsApps","-xr!Windows NT","-xr!Internet Explorer","-xr!Common Files\microsoft shared","-xr!ModifiableWindowsApps")
             $excludeProgData  = @("-xr!Microsoft","-xr!Windows","-xr!USOPrivate","-xr!USOShared","-xr!docker","-xr!GitHub","-xr!ssh")
-
             & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z"   "C:\Program Files\*"              -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
             & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" "C:\Program Files (x86)\*"        -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
             & $7z a -t7z "C:\GamingVM\Backups\AppData.7z"        "C:\Users\runneradmin\AppData\*"  -mx=1 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" 2>&1 | Out-Null
             & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z"    "C:\ProgramData\*"                -mx=1 -mmt=on -y @excludeProgData  2>&1 | Out-Null
             reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
             reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
-
             Write-Host "[$stamp] Compressed. Uploading to Mega..."
             & C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --config $RcloneConf --transfers=4 --retries=2 2>&1
             $stamp2 = Get-Date -Format "HH:mm:ss"
             Write-Host "[$stamp2] AUTO-SAVE done."
           }
 
-          # Wait 30 min before first save so initial setup is complete
           Start-Sleep -Seconds ($interval * 60)
-
           while ($true) {
             Do-Save
             Start-Sleep -Seconds ($interval * 60)
@@ -261,6 +282,7 @@ jobs:
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
           Write-Host "  AUTO-SAVE  : every 30 min to Mega"
+          Write-Host "  DOCKER     : pre-installed, ready to use"
           Write-Host "=========================================="
 
           $cutoff  = [DateTime]::Now.AddHours(5).AddMinutes(30)
@@ -295,7 +317,6 @@ jobs:
             }
           }
 
-          # Stop auto-save before final save takes over
           Stop-Process -Id $autoSaveProc.Id -Force -ErrorAction SilentlyContinue
           Write-Host "5.5 hrs reached — running final save..."
 
