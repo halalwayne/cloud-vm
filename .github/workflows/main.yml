@@ -21,64 +21,56 @@ jobs:
           Expand-Archive C:\rclone.zip -DestinationPath C:\rclone_tmp -Force
           $exe = Get-ChildItem C:\rclone_tmp -Recurse -Filter rclone.exe | Select-Object -First 1 -ExpandProperty FullName
           Copy-Item $exe C:\rclone.exe -Force
-          Write-Host "rclone ready"
 
           New-Item -Path "$env:APPDATA\rclone" -ItemType Directory -Force | Out-Null
           $obscured = & C:\rclone.exe obscure "$env:MEGA_PASS"
-          $lines = @(
-            "[mega]",
-            "type = mega",
-            "user = $env:MEGA_USER",
-            "pass = $obscured"
-          )
+          $lines = @("[mega]","type = mega","user = $env:MEGA_USER","pass = $obscured")
           $lines | Set-Content "$env:APPDATA\rclone\rclone.conf"
-          Write-Host "Mega configured"
 
-          Write-Host "Testing Mega connection..."
           C:\rclone.exe lsd mega: --max-depth 1
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARNING: Could not connect to Mega. Check credentials."
+            Write-Host "WARNING: Could not connect to Mega."
           } else {
-            Write-Host "Mega connection OK"
+            Write-Host "Mega OK"
           }
 
-      # ── STEP 1: Restore Everything from Mega ────────────────────────────
-      - name: 1. Restore Everything from Mega
+      # ── STEP 1: Restore from Mega ────────────────────────────────────────
+      - name: 1. Restore from Mega
         shell: pwsh
         run: |
           $7z = "C:\Program Files\7-Zip\7z.exe"
-          if (-not (Test-Path $7z)) {
-            choco install 7zip -y --no-progress
-          }
+          if (-not (Test-Path $7z)) { choco install 7zip -y --no-progress }
 
-          New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
-          New-Item -Path "C:\GamingVM\Files"   -ItemType Directory -Force
-          New-Item -Path "C:\GamingVM\MyApps"  -ItemType Directory -Force
+          New-Item -Path "C:\GamingVM\Backups"       -ItemType Directory -Force
+          New-Item -Path "C:\GamingVM\Files"         -ItemType Directory -Force
+          New-Item -Path "C:\GamingVM\Files\MyApps"  -ItemType Directory -Force
 
-          Write-Host "Downloading backups from Mega..."
+          Write-Host "Downloading from Mega..."
           C:\rclone.exe copy mega:GamingVM/Backups "C:\GamingVM\Backups" --progress --transfers=4 --retries=3 2>&1
           Write-Host "Download done (exit: $LASTEXITCODE)"
 
-          if (Test-Path "C:\GamingVM\Backups\ProgramFiles.7z") {
-            Write-Host "Restoring installed apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles.7z" -o"C:\Program Files\" -y 2>&1 | Out-Null
-            Write-Host "Done"
-          }
-          if (Test-Path "C:\GamingVM\Backups\ProgramFiles86.7z") {
-            Write-Host "Restoring 32-bit apps..."
-            & $7z x "C:\GamingVM\Backups\ProgramFiles86.7z" -o"C:\Program Files (x86)\" -y 2>&1 | Out-Null
-            Write-Host "Done"
-          }
+          # Restore Chrome profile + app settings
           if (Test-Path "C:\GamingVM\Backups\AppData.7z") {
-            Write-Host "Restoring app settings..."
+            Write-Host "Restoring AppData (Chrome profile, app settings)..."
             & $7z x "C:\GamingVM\Backups\AppData.7z" -o"C:\Users\runneradmin\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
-          if (Test-Path "C:\GamingVM\Backups\ProgramData.7z") {
-            Write-Host "Restoring ProgramData..."
-            & $7z x "C:\GamingVM\Backups\ProgramData.7z" -o"C:\ProgramData\" -y 2>&1 | Out-Null
+
+          # Restore your downloaded apps
+          if (Test-Path "C:\GamingVM\Backups\MyApps.7z") {
+            Write-Host "Restoring your apps..."
+            & $7z x "C:\GamingVM\Backups\MyApps.7z" -o"C:\GamingVM\Files\MyApps\" -y 2>&1 | Out-Null
             Write-Host "Done"
           }
+
+          # Restore your files
+          if (Test-Path "C:\GamingVM\Backups\MyFiles.7z") {
+            Write-Host "Restoring your files..."
+            & $7z x "C:\GamingVM\Backups\MyFiles.7z" -o"C:\GamingVM\Files\" -y 2>&1 | Out-Null
+            Write-Host "Done"
+          }
+
+          # Restore registry
           if (Test-Path "C:\GamingVM\Backups\Registry_HKLM.reg") {
             reg import "C:\GamingVM\Backups\Registry_HKLM.reg" 2>&1 | Out-Null
           }
@@ -87,93 +79,114 @@ jobs:
           }
 
           Write-Host "==============================="
-          Write-Host "All restored!"
+          Write-Host "Restore complete!"
           Write-Host "==============================="
           exit 0
 
-      # ── STEP 2: Performance + Docker + AnyDesk + RDP Setup ─────────────
-      - name: 2. Unlock Performance + Enable RDP + AnyDesk + Docker
+      # ── STEP 2: Install Chrome + Docker + RDP + AnyDesk ─────────────────
+      - name: 2. Install Apps + Enable RDP + AnyDesk
         shell: pwsh
         run: |
+          # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-          reg add "HKEY_CURRENT_USER\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
-
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableLockWorkstation /t REG_DWORD /d 1 /f
           reg add "HKCU\Control Panel\Desktop" /v ScreenSaveActive /t REG_SZ /d "0" /f
-          reg add "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure /t REG_SZ /d "0" /f
-          reg add "HKCU\Control Panel\Desktop" /v ScreenSaveTimeOut /t REG_SZ /d "0" /f
           reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableLockWorkstation /t REG_DWORD /d 1 /f
           powercfg /change standby-timeout-ac 0
           powercfg /change monitor-timeout-ac 0
           powercfg /change hibernate-timeout-ac 0
           powercfg /change disk-timeout-ac 0
-          Write-Host "Lock screen disabled permanently"
 
+          # ── Visual C++ ──
           curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
           Start-Process ./vc_redist.x64.exe -ArgumentList "/install /quiet /norestart" -Wait
 
-          # ── Enable WSL2 + Hyper-V (required for Docker Desktop) ──
-          Write-Host "Enabling WSL2 and Hyper-V features..."
+          # ── Chrome ──
+          Write-Host "Installing Chrome..."
+          curl.exe -L -o chrome_installer.exe "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
+          Start-Process ./chrome_installer.exe -ArgumentList "/silent /install" -Wait
+          Write-Host "Chrome installed"
+
+          # ── WSL2 + Hyper-V (Docker needs these) ──
+          Write-Host "Enabling WSL2 + Hyper-V..."
           dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart 2>&1 | Out-Null
           dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart 2>&1 | Out-Null
           dism.exe /online /enable-feature /featurename:Microsoft-Hyper-V-All /all /norestart 2>&1 | Out-Null
-          Write-Host "Features enabled"
 
-          # ── Install Docker Desktop silently (no logout needed) ──
-          Write-Host "Downloading Docker Desktop..."
-          curl.exe -L -o "C:\DockerDesktopInstaller.exe" "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-          Write-Host "Installing Docker Desktop silently..."
-          Start-Process "C:\DockerDesktopInstaller.exe" `
+          # ── Docker Desktop (silent, no logout needed) ──
+          Write-Host "Installing Docker Desktop..."
+          curl.exe -L -o DockerDesktopInstaller.exe "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+          Start-Process ./DockerDesktopInstaller.exe `
             -ArgumentList "install --quiet --accept-license --backend=wsl-2 --always-run-service" `
             -Wait -NoNewWindow
+          net localgroup "docker-users" "runneradmin" /add 2>&1 | Out-Null
+          Start-Service "com.docker.service" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 10
           Write-Host "Docker Desktop installed"
 
-          # ── Add runneradmin to docker-users group ──
-          net localgroup "docker-users" "runneradmin" /add 2>&1 | Out-Null
-          Write-Host "runneradmin added to docker-users"
+          # ── Restore n8n Docker volume if backup exists ──
+          if (Test-Path "C:\GamingVM\Backups\n8n_data.tar") {
+            Write-Host "Restoring n8n data..."
+            # Create volume and restore
+            docker volume create n8n_data 2>&1 | Out-Null
+            docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
+              tar xf /backup/n8n_data.tar -C /data 2>&1
+            Write-Host "n8n data restored"
+          }
 
-          # ── Start Docker service ──
-          Start-Service "com.docker.service" -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-          Write-Host "Docker service started"
+          # ── Start n8n container ──
+          Write-Host "Starting n8n..."
+          $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
+          if (-not $n8nRunning) {
+            docker run -d --name n8n --restart unless-stopped `
+              -p 5678:5678 `
+              -v n8n_data:/home/node/.n8n `
+              -e GENERIC_TIMEZONE="UTC" `
+              docker.n8n.io/n8nio/n8n 2>&1
+            Write-Host "n8n started on port 5678"
+          } else {
+            Write-Host "n8n already running"
+          }
+
+          # ── Reinstall any apps saved in MyApps folder ──
+          $myApps = "C:\GamingVM\Files\MyApps"
+          if (Test-Path $myApps) {
+            Get-ChildItem $myApps -Filter "*.exe" | ForEach-Object {
+              Write-Host "Reinstalling $($_.Name)..."
+              Start-Process $_.FullName -ArgumentList "/silent /quiet /norestart /S" -Wait -ErrorAction SilentlyContinue
+            }
+          }
 
           # ── AnyDesk ──
           curl.exe -L -o anydesk.exe https://download.anydesk.com/AnyDesk.exe
           Start-Process ./anydesk.exe -ArgumentList "--install C:\AnyDesk --start-with-win --silent" -Wait
 
+          # ── Spoof OS as Windows 10 Pro ──
           $cv = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
           Set-ItemProperty -Path $cv -Name "ProductName"               -Value "Windows 10 Pro"
           Set-ItemProperty -Path $cv -Name "EditionID"                 -Value "Professional"
-          Set-ItemProperty -Path $cv -Name "CompositionEditionID"      -Value "Professional"
           Set-ItemProperty -Path $cv -Name "CurrentBuildNumber"        -Value "19045"
           Set-ItemProperty -Path $cv -Name "CurrentMajorVersionNumber" -Value 10 -Type DWord
           Set-ItemProperty -Path $cv -Name "CurrentMinorVersionNumber" -Value 0  -Type DWord
-          Set-ItemProperty -Path $cv -Name "CurrentVersion"            -Value "10.0"
-          Write-Host "OS spoofed as Windows 10 Pro"
 
+          # ── RDP ──
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
-
           $rdpTcp = "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
           Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication" -Value 0
           Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"      -Value 0
           Set-ItemProperty -Path $rdpTcp -Name "MinEncryptionLevel" -Value 1
-
-          Stop-Service  "TermService" -Force -ErrorAction SilentlyContinue
-          Start-Sleep   -Seconds 3
+          Stop-Service "TermService" -Force -ErrorAction SilentlyContinue
+          Start-Sleep 3
           Start-Service "TermService"
-          Start-Sleep   -Seconds 2
-
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP-3389" protocol=TCP dir=in localport=3389 action=allow
-
           net user runneradmin "GitHub@2026"
           net localgroup "Remote Desktop Users" "runneradmin" /add
           Write-Host "RDP ready"
 
-          Write-Host "Downloading bore..."
+          # ── Bore ──
           $release = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest"
           $asset = $release.assets | Where-Object { $_.name -like "*x86_64*windows*" } | Select-Object -First 1
-
           if (-not $asset) {
             curl.exe -L -o "C:\bore.zip" "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
           } else {
@@ -184,23 +197,37 @@ jobs:
           Copy-Item $boreExe "C:\bore.exe" -Force
           Write-Host "bore.exe ready"
 
-          # ── Write the background auto-save script ──────────────────────
+          # ── Auto-save script (runs every 30 min in background) ──
           $saveScript = 'param([string]$RcloneConf)
           $7z = "C:\Program Files\7-Zip\7z.exe"
-          $interval = 30  # minutes between saves
+          $interval = 30
 
           function Do-Save {
             $stamp = Get-Date -Format "HH:mm:ss"
             Write-Host "[$stamp] AUTO-SAVE starting..."
-            $excludeProgFiles = @("-xr!WindowsApps","-xr!Windows NT","-xr!Internet Explorer","-xr!Common Files\microsoft shared","-xr!ModifiableWindowsApps")
-            $excludeProgData  = @("-xr!Microsoft","-xr!Windows","-xr!USOPrivate","-xr!USOShared","-xr!docker","-xr!GitHub","-xr!ssh")
-            & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z"   "C:\Program Files\*"              -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
-            & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" "C:\Program Files (x86)\*"        -mx=1 -mmt=on -y @excludeProgFiles 2>&1 | Out-Null
-            & $7z a -t7z "C:\GamingVM\Backups\AppData.7z"        "C:\Users\runneradmin\AppData\*"  -mx=1 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" 2>&1 | Out-Null
-            & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z"    "C:\ProgramData\*"                -mx=1 -mmt=on -y @excludeProgData  2>&1 | Out-Null
+
+            # Chrome profile + app settings
+            & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" 2>&1 | Out-Null
+
+            # Your personal files
+            & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=3 -mmt=on -y -xr!"MyApps" 2>&1 | Out-Null
+
+            # Your downloaded apps (installers)
+            & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" "C:\GamingVM\Files\MyApps\*" -mx=3 -mmt=on -y 2>&1 | Out-Null
+
+            # Registry
             reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
             reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
-            Write-Host "[$stamp] Compressed. Uploading to Mega..."
+
+            # n8n Docker volume (backup data only, not the image)
+            $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
+            if ($n8nRunning) {
+              docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
+                tar cf /backup/n8n_data.tar -C /data . 2>&1 | Out-Null
+              Write-Host "[$stamp] n8n data backed up"
+            }
+
+            Write-Host "[$stamp] Uploading to Mega..."
             & C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --config $RcloneConf --transfers=4 --retries=2 2>&1
             $stamp2 = Get-Date -Format "HH:mm:ss"
             Write-Host "[$stamp2] AUTO-SAVE done."
@@ -213,9 +240,9 @@ jobs:
           }
           '
           $saveScript | Set-Content "C:\GamingVM\autosave.ps1"
-          Write-Host "Auto-save script written"
+          Write-Host "Setup complete!"
 
-      # ── STEP 3: Start Bore + AnyDesk + Keep Alive ──────────────────────
+      # ── STEP 3: Session Info & Keep Alive ───────────────────────────────
       - name: 3. Session Info & Keep Alive
         shell: pwsh
         env:
@@ -236,53 +263,55 @@ jobs:
           $errFile = "C:\GamingVM\bore_err.txt"
 
           function Start-Bore {
-            "" | Set-Content "C:\GamingVM\bore_out.txt"
-            "" | Set-Content "C:\GamingVM\bore_err.txt"
+            "" | Set-Content $outFile
+            "" | Set-Content $errFile
             Start-Process -FilePath "C:\bore.exe" `
               -ArgumentList "local 3389 --to bore.pub" `
-              -RedirectStandardOutput "C:\GamingVM\bore_out.txt" `
-              -RedirectStandardError  "C:\GamingVM\bore_err.txt" `
+              -RedirectStandardOutput $outFile `
+              -RedirectStandardError  $errFile `
               -WindowStyle Hidden -PassThru
           }
 
           $boreProcess = Start-Bore
-
           $rdpPort = ""
           for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 3
-            $out  = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-            $err  = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-            $text = "$out`n$err"
-            $match = [regex]::Match($text, "bore\.pub:(\d+)")
-            if ($match.Success) { $rdpPort = $match.Groups[1].Value; break }
-            $match2 = [regex]::Match($text, "remote_port=(\d+)")
-            if ($match2.Success) { $rdpPort = $match2.Groups[1].Value; break }
+            $text = "$(Get-Content $outFile -Raw -ErrorAction SilentlyContinue)`n$(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)"
+            $m = [regex]::Match($text, "bore\.pub:(\d+)")
+            if ($m.Success) { $rdpPort = $m.Groups[1].Value; break }
+            $m2 = [regex]::Match($text, "remote_port=(\d+)")
+            if ($m2.Success) { $rdpPort = $m2.Groups[1].Value; break }
           }
 
-          $rdpIP = ""
           try {
             $rdpIP = [System.Net.Dns]::GetHostAddresses("bore.pub") |
                      Where-Object { $_.AddressFamily -eq "InterNetwork" } |
                      Select-Object -First 1 -ExpandProperty IPAddressToString
           } catch { $rdpIP = "bore.pub" }
 
-          # ── Start background auto-save process ──
+          # Start auto-save in background
           $rcloneConf = "$env:APPDATA\rclone\rclone.conf"
           $autoSaveProc = Start-Process powershell `
             -ArgumentList "-NonInteractive -WindowStyle Hidden -File C:\GamingVM\autosave.ps1 -RcloneConf `"$rcloneConf`"" `
             -PassThru -WindowStyle Hidden
-          Write-Host "Auto-save started (PID: $($autoSaveProc.Id)) — saves every 30 min"
+          Write-Host "Auto-save started (PID: $($autoSaveProc.Id)) — every 30 min"
 
+          # Get n8n status
+          $n8nPort = "5678"
           Write-Host "=========================================="
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
           Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  ── LG TV RDP ──────────────────────"
-          Write-Host "  TYPE THIS  : $rdpIP`:$rdpPort"
+          Write-Host "  ── RDP ────────────────────────────"
+          Write-Host "  ADDRESS    : $rdpIP`:$rdpPort"
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
+          Write-Host "  ── n8n ────────────────────────────"
+          Write-Host "  n8n URL    : http://localhost:$n8nPort"
+          Write-Host "  ── Tips ───────────────────────────"
+          Write-Host "  YOUR FILES : C:\GamingVM\Files\"
+          Write-Host "  YOUR APPS  : C:\GamingVM\Files\MyApps\ (save .exe here!)"
           Write-Host "  AUTO-SAVE  : every 30 min to Mega"
-          Write-Host "  DOCKER     : pre-installed, ready to use"
           Write-Host "=========================================="
 
           $cutoff  = [DateTime]::Now.AddHours(5).AddMinutes(30)
@@ -297,13 +326,9 @@ jobs:
               Write-Host "Bore died — restarting..."
               $boreProcess = Start-Bore
               Start-Sleep -Seconds 8
-              $out  = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-              $err  = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-              $text = "$out`n$err"
+              $text = "$(Get-Content $outFile -Raw -ErrorAction SilentlyContinue)`n$(Get-Content $errFile -Raw -ErrorAction SilentlyContinue)"
               $m = [regex]::Match($text, "bore\.pub:(\d+)")
               if ($m.Success) { $rdpPort = $m.Groups[1].Value }
-              $m2 = [regex]::Match($text, "remote_port=(\d+)")
-              if ($m2.Success) { $rdpPort = $m2.Groups[1].Value }
               Write-Host "Bore restarted! → $rdpIP`:$rdpPort"
             }
 
@@ -328,42 +353,41 @@ jobs:
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
-          $excludeProgFiles = @(
-            "-xr!WindowsApps",
-            "-xr!Windows NT",
-            "-xr!Internet Explorer",
-            "-xr!Common Files\microsoft shared",
-            "-xr!ModifiableWindowsApps"
-          )
-          $excludeProgData = @(
-            "-xr!Microsoft",
-            "-xr!Windows",
-            "-xr!USOPrivate",
-            "-xr!USOShared",
-            "-xr!docker",
-            "-xr!GitHub",
-            "-xr!ssh"
-          )
-
-          Write-Host "Saving installed apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles.7z" "C:\Program Files\*" -mx=3 -mmt=on -y @excludeProgFiles
+          # Chrome profile + all app settings
+          Write-Host "Saving AppData..."
+          & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" `
+            -mx=5 -mmt=on -y `
+            -xr!"Temp" -xr!"Local\Temp" `
+            -xr!"cache" -xr!"Cache" `
+            -xr!"Local\Packages" `
+            -xr!"Local\Microsoft\Windows"
           Write-Host "Done (exit: $LASTEXITCODE)"
 
-          Write-Host "Saving 32-bit apps..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramFiles86.7z" "C:\Program Files (x86)\*" -mx=3 -mmt=on -y @excludeProgFiles
+          # Personal files
+          Write-Host "Saving your files..."
+          & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=5 -mmt=on -y -xr!"MyApps"
           Write-Host "Done (exit: $LASTEXITCODE)"
 
-          Write-Host "Saving app settings..."
-          & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows"
+          # Downloaded app installers
+          Write-Host "Saving your apps..."
+          & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" "C:\GamingVM\Files\MyApps\*" -mx=3 -mmt=on -y
           Write-Host "Done (exit: $LASTEXITCODE)"
 
-          Write-Host "Saving ProgramData..."
-          & $7z a -t7z "C:\GamingVM\Backups\ProgramData.7z" "C:\ProgramData\*" -mx=3 -mmt=on -y @excludeProgData
-          Write-Host "Done (exit: $LASTEXITCODE)"
-
+          # Registry
           Write-Host "Saving registry..."
           reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
           reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
+
+          # n8n data volume
+          Write-Host "Saving n8n data..."
+          $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
+          if ($n8nRunning) {
+            docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
+              tar cf /backup/n8n_data.tar -C /data . 2>&1
+            Write-Host "n8n data saved"
+          } else {
+            Write-Host "n8n not running — skipping"
+          }
 
           Write-Host "======= Backup Sizes ======="
           Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
@@ -372,12 +396,12 @@ jobs:
           }
           Write-Host "============================"
 
-          Write-Host "Uploading final backup to Mega..."
+          Write-Host "Uploading to Mega..."
           C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --progress --transfers=4 --retries=3 --stats=30s 2>&1
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Final upload to Mega complete!"
+            Write-Host "Upload complete!"
           } else {
-            Write-Host "WARNING: Upload may have had issues (exit: $LASTEXITCODE)"
+            Write-Host "WARNING: Upload had issues (exit: $LASTEXITCODE)"
           }
           exit 0
 
