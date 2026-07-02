@@ -83,9 +83,11 @@ jobs:
           Write-Host "==============================="
           exit 0
 
-      # ── STEP 2: Install Chrome + Docker + RDP + AnyDesk ─────────────────
+      # ── STEP 2: Install Chrome + Enable RDP + AnyDesk ───────────────────
       - name: 2. Install Apps + Enable RDP + AnyDesk
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # ── Performance ──
           powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
@@ -106,47 +108,6 @@ jobs:
           curl.exe -L -o chrome_installer.exe "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
           Start-Process ./chrome_installer.exe -ArgumentList "/silent /install" -Wait
           Write-Host "Chrome installed"
-
-          # ── WSL2 + Hyper-V (Docker needs these) ──
-          Write-Host "Enabling WSL2 + Hyper-V..."
-          dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart 2>&1 | Out-Null
-          dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart 2>&1 | Out-Null
-          dism.exe /online /enable-feature /featurename:Microsoft-Hyper-V-All /all /norestart 2>&1 | Out-Null
-
-          # ── Docker Desktop (silent, no logout needed) ──
-          Write-Host "Installing Docker Desktop..."
-          curl.exe -L -o DockerDesktopInstaller.exe "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-          Start-Process ./DockerDesktopInstaller.exe `
-            -ArgumentList "install --quiet --accept-license --backend=wsl-2 --always-run-service" `
-            -Wait -NoNewWindow
-          net localgroup "docker-users" "runneradmin" /add 2>&1 | Out-Null
-          Start-Service "com.docker.service" -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 10
-          Write-Host "Docker Desktop installed"
-
-          # ── Restore n8n Docker volume if backup exists ──
-          if (Test-Path "C:\GamingVM\Backups\n8n_data.tar") {
-            Write-Host "Restoring n8n data..."
-            # Create volume and restore
-            docker volume create n8n_data 2>&1 | Out-Null
-            docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
-              tar xf /backup/n8n_data.tar -C /data 2>&1
-            Write-Host "n8n data restored"
-          }
-
-          # ── Start n8n container ──
-          Write-Host "Starting n8n..."
-          $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
-          if (-not $n8nRunning) {
-            docker run -d --name n8n --restart unless-stopped `
-              -p 5678:5678 `
-              -v n8n_data:/home/node/.n8n `
-              -e GENERIC_TIMEZONE="UTC" `
-              docker.n8n.io/n8nio/n8n 2>&1
-            Write-Host "n8n started on port 5678"
-          } else {
-            Write-Host "n8n already running"
-          }
 
           # ── Reinstall any apps saved in MyApps folder ──
           $myApps = "C:\GamingVM\Files\MyApps"
@@ -185,7 +146,7 @@ jobs:
           Write-Host "RDP ready"
 
           # ── Bore ──
-          $release = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest"
+          $release = Invoke-RestMethod "https://api.github.com/repos/ekzhang/bore/releases/latest" -Headers @{ Authorization = "token $env:GH_TOKEN" }
           $asset = $release.assets | Where-Object { $_.name -like "*x86_64*windows*" } | Select-Object -First 1
           if (-not $asset) {
             curl.exe -L -o "C:\bore.zip" "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
@@ -206,11 +167,18 @@ jobs:
             $stamp = Get-Date -Format "HH:mm:ss"
             Write-Host "[$stamp] AUTO-SAVE starting..."
 
-            # Chrome profile + app settings
-            & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y -xr!"Temp" -xr!"Local\Temp" -xr!"cache" -xr!"Cache" -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" 2>&1 | Out-Null
+            # Chrome profile + app settings (skip caches, temp, logs, crash dumps)
+            & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" -mx=3 -mmt=on -y `
+              -xr!"Temp" -xr!"Local\Temp" `
+              -xr!"cache" -xr!"Cache" -xr!"Code Cache" -xr!"GPUCache" `
+              -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" `
+              -xr!"Local\CrashDumps" -xr!"*.log" -xr!"*.tmp" `
+              -xr!"Local\Google\Chrome\User Data\*\Service Worker" `
+              -xr!"Local\Google\Chrome\User Data\*\GPUCache" 2>&1 | Out-Null
 
-            # Your personal files
-            & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=3 -mmt=on -y -xr!"MyApps" 2>&1 | Out-Null
+            # Your personal files (skip junk)
+            & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=3 -mmt=on -y `
+              -xr!"MyApps" -xr!"*.tmp" -xr!"*.log" -xr!"Thumbs.db" -xr!"desktop.ini" 2>&1 | Out-Null
 
             # Your downloaded apps (installers)
             & $7z a -t7z "C:\GamingVM\Backups\MyApps.7z" "C:\GamingVM\Files\MyApps\*" -mx=3 -mmt=on -y 2>&1 | Out-Null
@@ -218,14 +186,6 @@ jobs:
             # Registry
             reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
             reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
-
-            # n8n Docker volume (backup data only, not the image)
-            $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
-            if ($n8nRunning) {
-              docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
-                tar cf /backup/n8n_data.tar -C /data . 2>&1 | Out-Null
-              Write-Host "[$stamp] n8n data backed up"
-            }
 
             Write-Host "[$stamp] Uploading to Mega..."
             & C:\rclone.exe copy "C:\GamingVM\Backups" mega:GamingVM/Backups --config $RcloneConf --transfers=4 --retries=2 2>&1
@@ -296,8 +256,6 @@ jobs:
             -PassThru -WindowStyle Hidden
           Write-Host "Auto-save started (PID: $($autoSaveProc.Id)) — every 30 min"
 
-          # Get n8n status
-          $n8nPort = "5678"
           Write-Host "=========================================="
           Write-Host "  RUN NUMBER : $env:RUN_NUMBER"
           Write-Host "  ANYDESK ID : $ID"
@@ -306,8 +264,6 @@ jobs:
           Write-Host "  ADDRESS    : $rdpIP`:$rdpPort"
           Write-Host "  USERNAME   : runneradmin"
           Write-Host "  PASSWORD   : GitHub@2026"
-          Write-Host "  ── n8n ────────────────────────────"
-          Write-Host "  n8n URL    : http://localhost:$n8nPort"
           Write-Host "  ── Tips ───────────────────────────"
           Write-Host "  YOUR FILES : C:\GamingVM\Files\"
           Write-Host "  YOUR APPS  : C:\GamingVM\Files\MyApps\ (save .exe here!)"
@@ -353,19 +309,22 @@ jobs:
           $7z = "C:\Program Files\7-Zip\7z.exe"
           New-Item -Path "C:\GamingVM\Backups" -ItemType Directory -Force
 
-          # Chrome profile + all app settings
+          # Chrome profile + app settings (skip caches, temp, logs, crash dumps)
           Write-Host "Saving AppData..."
           & $7z a -t7z "C:\GamingVM\Backups\AppData.7z" "C:\Users\runneradmin\AppData\*" `
             -mx=5 -mmt=on -y `
             -xr!"Temp" -xr!"Local\Temp" `
-            -xr!"cache" -xr!"Cache" `
-            -xr!"Local\Packages" `
-            -xr!"Local\Microsoft\Windows"
+            -xr!"cache" -xr!"Cache" -xr!"Code Cache" -xr!"GPUCache" `
+            -xr!"Local\Packages" -xr!"Local\Microsoft\Windows" `
+            -xr!"Local\CrashDumps" -xr!"*.log" -xr!"*.tmp" `
+            -xr!"Local\Google\Chrome\User Data\*\Service Worker" `
+            -xr!"Local\Google\Chrome\User Data\*\GPUCache"
           Write-Host "Done (exit: $LASTEXITCODE)"
 
-          # Personal files
+          # Personal files (skip junk)
           Write-Host "Saving your files..."
-          & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=5 -mmt=on -y -xr!"MyApps"
+          & $7z a -t7z "C:\GamingVM\Backups\MyFiles.7z" "C:\GamingVM\Files\*" -mx=5 -mmt=on -y `
+            -xr!"MyApps" -xr!"*.tmp" -xr!"*.log" -xr!"Thumbs.db" -xr!"desktop.ini"
           Write-Host "Done (exit: $LASTEXITCODE)"
 
           # Downloaded app installers
@@ -377,17 +336,6 @@ jobs:
           Write-Host "Saving registry..."
           reg export "HKLM\SOFTWARE" "C:\GamingVM\Backups\Registry_HKLM.reg" /y 2>&1 | Out-Null
           reg export "HKCU"          "C:\GamingVM\Backups\Registry_HKCU.reg" /y 2>&1 | Out-Null
-
-          # n8n data volume
-          Write-Host "Saving n8n data..."
-          $n8nRunning = docker ps --filter "name=n8n" --format "{{.Names}}" 2>$null
-          if ($n8nRunning) {
-            docker run --rm -v n8n_data:/data -v "C:\GamingVM\Backups:/backup" alpine `
-              tar cf /backup/n8n_data.tar -C /data . 2>&1
-            Write-Host "n8n data saved"
-          } else {
-            Write-Host "n8n not running — skipping"
-          }
 
           Write-Host "======= Backup Sizes ======="
           Get-ChildItem "C:\GamingVM\Backups\" | ForEach-Object {
